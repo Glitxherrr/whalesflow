@@ -46,6 +46,26 @@
         </div>
     </header>
 
+    <!-- Market Regime Detector -->
+    <div class="regime-bar" id="regimeBar">
+        <div class="regime-indicator" id="regimeIndicator">
+            <span class="regime-dot" id="regimeDot">●</span>
+            <span class="regime-label" id="regimeLabel">ANALYZING…</span>
+        </div>
+        <div class="regime-score-wrap">
+            <div class="regime-score-bar">
+                <div class="regime-score-fill" id="regimeScoreFill" style="width: 50%"></div>
+            </div>
+            <span class="regime-score-value" id="regimeScoreValue">—</span>
+        </div>
+        <div class="regime-conditions" id="regimeConditions">
+            <span class="regime-cond" id="regCondRange">📏 Range: —</span>
+            <span class="regime-cond" id="regCondVolume">📊 Vol: —</span>
+            <span class="regime-cond" id="regCondCVD">⚖️ CVD: —</span>
+            <span class="regime-cond" id="regCondBalance">🎯 Balance: —</span>
+        </div>
+    </div>
+
     <!-- Summary Cards Section -->
     <section class="summary-section" id="summarySection">
         <!-- Whale Buys Card -->
@@ -357,6 +377,109 @@
                     <!-- Explanation -->
                     <div class="absorption-explanation" id="absExplanation">
                         Accumulating 1-hour flow data. Absorption detection requires: (1) strong flow imbalance, (2) price moving against flow, (3) OI increasing, (4) funding confirming bias. All must be true simultaneously.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Advanced Reversal Detection Section -->
+    <section class="advanced-section">
+        <div class="advanced-grid">
+            <!-- Reversal Radar -->
+            <div class="card reversal-card">
+                <div class="card-header">
+                    <h2>🎯 Reversal Radar</h2>
+                    <span class="card-badge mono" id="radarAlertBadge">🟢 Quiet (0/8)</span>
+                </div>
+
+                <!-- Alert Level Banner -->
+                <div class="radar-alert-banner" id="radarAlertBanner">
+                    <div class="radar-alert-level" id="radarAlertLevel">
+                        <span class="alert-level-icon" id="alertLevelIcon">🟢</span>
+                        <span class="alert-level-text" id="alertLevelText">QUIET</span>
+                    </div>
+                    <div class="radar-alert-sub" id="radarAlertSub">0 / 8 signals active — no reversal conditions detected</div>
+                    <div class="radar-alert-bar">
+                        <div class="radar-alert-fill" id="radarAlertFill" style="width:0%"></div>
+                    </div>
+                </div>
+
+                <!-- 7-Signal Checklist -->
+                <div class="signal-checklist">
+                    <div class="signal-row" id="sigAbsorption">
+                        <span class="signal-dot" id="sigAbsorptionDot">○</span>
+                        <span class="signal-icon">🧱</span>
+                        <span class="signal-name">Absorption</span>
+                        <span class="signal-detail mono" id="sigAbsorptionDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigCVD">
+                        <span class="signal-dot" id="sigCVDDot">○</span>
+                        <span class="signal-icon">📉</span>
+                        <span class="signal-name">CVD Divergence</span>
+                        <span class="signal-detail mono" id="sigCVDDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigOI">
+                        <span class="signal-dot" id="sigOIDot">○</span>
+                        <span class="signal-icon">📊</span>
+                        <span class="signal-name">OI Divergence</span>
+                        <span class="signal-detail mono" id="sigOIDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigClimax">
+                        <span class="signal-dot" id="sigClimaxDot">○</span>
+                        <span class="signal-icon">🌋</span>
+                        <span class="signal-name">Volume Climax</span>
+                        <span class="signal-detail mono" id="sigClimaxDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigFunding">
+                        <span class="signal-dot" id="sigFundingDot">○</span>
+                        <span class="signal-icon">💰</span>
+                        <span class="signal-name">Funding Extreme</span>
+                        <span class="signal-detail mono" id="sigFundingDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigFlip">
+                        <span class="signal-dot" id="sigFlipDot">○</span>
+                        <span class="signal-icon">🔄</span>
+                        <span class="signal-name">Funding Flip</span>
+                        <span class="signal-detail mono" id="sigFlipDetail">—</span>
+                        <button class="ack-btn" id="sigFlipAck" style="display:none" title="Acknowledge">✓</button>
+                    </div>
+                    <div class="flip-chaos-bar" id="flipChaosBar" style="display:none">
+                        <span class="chaos-icon">⚡</span>
+                        <span class="chaos-text" id="flipChaosText">0 flips in 1h</span>
+                        <span class="chaos-level" id="flipChaosLevel">Normal</span>
+                        <button class="ack-btn" id="chaosAck" style="display:none" title="Acknowledge">✓</button>
+                    </div>
+                    <div class="signal-row" id="sigInitiative">
+                        <span class="signal-dot" id="sigInitiativeDot">○</span>
+                        <span class="signal-icon">🐋</span>
+                        <span class="signal-name">Aggressive Initiative</span>
+                        <span class="signal-detail mono" id="sigInitiativeDetail">—</span>
+                    </div>
+                    <div class="signal-row" id="sigClustering">
+                        <span class="signal-dot" id="sigClusteringDot">○</span>
+                        <span class="signal-icon">🦈</span>
+                        <span class="signal-name">Whale Clustering</span>
+                        <span class="signal-detail mono" id="sigClusteringDetail">—</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mega Whales -->
+            <div class="card mega-whales-card">
+                <div class="card-header">
+                    <h2>💎 Mega Whales</h2>
+                    <span class="card-badge mono" id="megaWhaleCount">0 events</span>
+                </div>
+                <div class="mega-whale-legend">
+                    <span class="legend-item"><span class="legend-dot initiative-dot"></span> Initiative ($M+ single)</span>
+                    <span class="legend-item"><span class="legend-dot clustering-dot"></span> Clustering (5+ burst)</span>
+                </div>
+                <div class="mega-whale-list" id="megaWhaleList">
+                    <div class="empty-state">
+                        <div class="empty-icon">💎</div>
+                        <p>Waiting for mega whale activity...</p>
+                        <span class="empty-sub">Initiative trades and whale clusters will appear here</span>
                     </div>
                 </div>
             </div>
