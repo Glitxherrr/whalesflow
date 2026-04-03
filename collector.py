@@ -424,8 +424,8 @@ class HyperliquidCollector:
 
         # --- Factor 3: CVD direction (0-15 pts) ---
         cvd_score = 7
-        total_buy = d.get('total_buy_volume', 0)
-        total_sell = d.get('total_sell_volume', 0)
+        total_buy = d.get('total_buy_vol', 0)   # correct key
+        total_sell = d.get('total_sell_vol', 0)  # correct key
         if total_buy + total_sell > 0:
             cvd = total_buy - total_sell
             total_vol = total_buy + total_sell
@@ -566,7 +566,7 @@ class HyperliquidCollector:
                 if c1:
                     c2 = (flow_is_buy and price_delta <= 0.02) or (not flow_is_buy and price_delta >= -0.02)
                 c3 = oi_delta > 0.05
-                c4 = (flow_is_buy and funding > 0.000005) or (not flow_is_buy and funding < -0.000005)
+                c4 = (flow_is_buy and funding > 0) or (not flow_is_buy and funding < 0)
 
                 d['abs_conditions'] = {'flow': c1, 'reversal': c2, 'oi': c3, 'funding': c4}
                 met = sum([c1, c2, c3, c4])
@@ -763,23 +763,24 @@ class HyperliquidCollector:
         return result
 
     def _check_funding_extreme(self, coin):
-        """Funding > 0.03% or < -0.03% per 8h = extreme."""
+        """Track funding sign only: positive = longs paying (bearish bias),
+        negative = shorts paying (bullish bias). No extreme threshold needed."""
         d = self.data[coin]
         funding = d['funding']
         rate_pct = funding * 100
 
         result = None
-        if rate_pct > 0.03:
+        if rate_pct > 0:
             result = 'bearish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bearish',
-                'detail': f"Funding {rate_pct:.4f}% — longs overleveraged",
+                'detail': f"Funding +{rate_pct:.4f}% — longs paying (bearish pressure)",
             }
-        elif rate_pct < -0.03:
+        elif rate_pct < 0:
             result = 'bullish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bullish',
-                'detail': f"Funding {rate_pct:.4f}% — shorts overleveraged",
+                'detail': f"Funding {rate_pct:.4f}% — shorts paying (bullish pressure)",
             }
         else:
             d['signals']['funding_extreme'] = {'active': False, 'side': None, 'detail': ''}
