@@ -946,12 +946,13 @@ class WhaleFlowDashboard {
             const c3_oi = oiDelta > 0.05; // OI grew by at least 0.05%
 
             // C4: Funding confirms the crowd's directional bias
+            // Uses 0.000005 threshold (0.0005%) to filter noise — matches Funding UI "Neutral" cutoff
             // Positive funding = longs paying = crowd is long = if flow is buy-dominant, funding confirms
             // Negative funding = shorts paying = crowd is short = if flow is sell-dominant, funding confirms
             let c4_funding = false;
-            if (flowIsBuySide && fundingRate > 0) {
+            if (flowIsBuySide && fundingRate > 0.000005) {
                 c4_funding = true; // Crowd long + buying flow = bias confirmed
-            } else if (!flowIsBuySide && fundingRate < 0) {
+            } else if (!flowIsBuySide && fundingRate < -0.000005) {
                 c4_funding = true; // Crowd short + selling flow = bias confirmed
             }
 
@@ -967,7 +968,7 @@ class WhaleFlowDashboard {
             abs.conditionsMet = metCount;
 
             const wasDetected = abs.detected;
-            abs.detected = metCount === 4;
+            abs.detected = (c1_flow && c2_reversal && c3_oi); // Core 3 required, C4 funding is bonus
 
             if (abs.detected) {
                 // Determine side
@@ -1782,13 +1783,14 @@ class WhaleFlowDashboard {
             }
         }
 
-        // 5. Funding Extreme — tracks sign only (positive = longs paying = bearish pressure)
+        // 5. Funding Extreme — only fires for genuinely elevated rates (±0.005%)
+        //    Normal funding hovers near 0; this signal means overleveraged positions
         if (this.fundingData && this.fundingData.funding !== undefined) {
             const ratePct = this.fundingData.funding * 100;
-            if (ratePct > 0) {
-                sigs.funding_extreme = { active: true, side: 'bearish', detail: `Funding +${ratePct.toFixed(4)}% — longs paying (bearish pressure)` };
-            } else if (ratePct < 0) {
-                sigs.funding_extreme = { active: true, side: 'bullish', detail: `Funding ${ratePct.toFixed(4)}% — shorts paying (bullish pressure)` };
+            if (ratePct > 0.005) {
+                sigs.funding_extreme = { active: true, side: 'bearish', detail: `Funding +${ratePct.toFixed(4)}% — longs overleveraged` };
+            } else if (ratePct < -0.005) {
+                sigs.funding_extreme = { active: true, side: 'bullish', detail: `Funding ${ratePct.toFixed(4)}% — shorts overleveraged` };
             } else {
                 sigs.funding_extreme = { active: false, side: null, detail: '' };
             }
