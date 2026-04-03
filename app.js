@@ -152,118 +152,7 @@ class WhaleFlowDashboard {
         return this.coinDataStore.get(coin);
     }
 
-    /**
-     * Seed the frontend coin data store from the backend's accumulated state.
-     * Called once on init when window.__SERVER_STATE__ is available.
-     * This eliminates the "warmup" period after a page refresh.
-     */
-    loadServerState(state) {
-        if (!state || !state.coins) return;
-        console.log('🔄 Loading server-accumulated state…');
-
-        this.coinList.forEach(coin => {
-            const sd = state.coins[coin];
-            if (!sd) return;
-            const d = this.getCoinData(coin);
-
-            // ---- Whale trades ----
-            if (Array.isArray(sd.whale_trades)) {
-                d.whaleTrades = sd.whale_trades.slice(-200); // cap at 200
-            }
-            if (Array.isArray(sd.mega_whales)) {
-                d.megaWhales = sd.mega_whales.slice(-50);
-            }
-
-            // ---- Volume totals ----
-            d.totalBuyVolume  = sd.total_buy_vol  || 0;
-            d.totalSellVolume = sd.total_sell_vol || 0;
-            d.buyCount        = sd.buy_count       || 0;
-            d.sellCount       = sd.sell_count      || 0;
-
-            // ---- Volume buckets ----
-            if (Array.isArray(sd.volume_buckets)) {
-                d.volumeBuckets = sd.volume_buckets;
-            }
-
-            // ---- Pressure history ----
-            if (Array.isArray(sd.pressure_history)) {
-                d.pressureHistory = sd.pressure_history;
-                if (d.pressureHistory.length > 0) {
-                    const last = d.pressureHistory[d.pressureHistory.length - 1];
-                    d.lastPressureSnapshot = { buys: last.buys || 0, sells: last.sells || 0 };
-                }
-            }
-
-            // ---- Signals ----
-            if (sd.signals) {
-                d.signals = sd.signals;
-            }
-            if (sd.alert_level !== undefined) d.alertLevel = sd.alert_level;
-            if (sd.alert_label !== undefined) d.alertLabel = sd.alert_label;
-
-            // ---- Absorption ----
-            if (sd.abs) {
-                const a = sd.abs;
-                d.abs.detected       = a.detected  || false;
-                d.abs.side           = a.side       || null;
-                d.abs.conditionsMet  = a.conditions_met || 0;
-                d.abs.conditions     = a.conditions || d.abs.conditions;
-                d.abs.metrics        = a.metrics    || d.abs.metrics;
-                d.abs.cumBuyVol      = a.cum_buy    || 0;
-                d.abs.cumSellVol     = a.cum_sell   || 0;
-                if (Array.isArray(a.snapshots)) {
-                    d.abs.snapshots = a.snapshots;
-                }
-            }
-
-            // ---- Flip state ----
-            if (sd.flip_state) {
-                const fs = sd.flip_state;
-                d.flipState = {
-                    currentSign:         fs.current_sign         || null,
-                    lastSign:            fs.last_sign            || null,
-                    lastSignTime:        (fs.last_sign_time      || 0) * 1000, // convert to ms
-                    lastFundingValue:    fs.last_funding_value   || 0,
-                    flipHistory:         (fs.flip_history        || []).map(f => ({
-                        from: f.from, to: f.to,
-                        time: (f.time || 0) * 1000,
-                        rate: f.rate
-                    })),
-                    chaosActive:         fs.chaos_active         || false,
-                    chaosResolved:       fs.chaos_resolved       || false,
-                    chaosResolvedSide:   fs.chaos_resolved_side  || null,
-                    chaosResolvedTime:  (fs.chaos_resolved_time  || 0) * 1000,
-                };
-            }
-
-            // ---- Market Regime (most important — eliminates warmup completely) ----
-            if (sd.regime) {
-                const r = sd.regime;
-                d.regime.score          = r.score       || 50;
-                d.regime.label          = r.label       || 'ANALYZING…';
-                d.regime.cssClass       = r.css_class   || '';
-                d.regime.lastChangeTime = (r.last_change_time || 0) * 1000; // backend uses seconds
-                d.regime.rangeScore     = r.range_score  || 0;
-                d.regime.volumeScore    = r.volume_score || 0;
-                d.regime.cvdScore       = r.cvd_score    || 0;
-                d.regime.balanceScore   = r.balance_score || 0;
-                // Seed price history from backend (backend uses seconds, convert to ms)
-                if (Array.isArray(r.price_history)) {
-                    d.regime.priceHistory = r.price_history.map(p => ({
-                        time:  p.time * 1000,
-                        price: p.price
-                    }));
-                }
-            }
-        });
-
-        console.log('✅ Server state loaded — regime and flip state pre-seeded.');
-        // Trigger an immediate UI render with loaded data
-        this.renderRegime();
-        this.renderReversalRadar();
-        this.renderAbsorptionUI();
-        this.renderMegaWhales();
-    }
+    // loadServerState is defined below in the SERVER STATE HYDRATION section
 
     /** Load display copies from the per-coin store */
     loadCoinData(coin) {
@@ -1060,9 +949,9 @@ class WhaleFlowDashboard {
             // Positive funding = longs paying = crowd is long = if flow is buy-dominant, funding confirms
             // Negative funding = shorts paying = crowd is short = if flow is sell-dominant, funding confirms
             let c4_funding = false;
-            if (flowIsBuySide && fundingRate > 0.000005) {
+            if (flowIsBuySide && fundingRate > 0) {
                 c4_funding = true; // Crowd long + buying flow = bias confirmed
-            } else if (!flowIsBuySide && fundingRate < -0.000005) {
+            } else if (!flowIsBuySide && fundingRate < 0) {
                 c4_funding = true; // Crowd short + selling flow = bias confirmed
             }
 
@@ -1676,9 +1565,9 @@ class WhaleFlowDashboard {
 
             const d = this.getCoinData(coin);
 
-            // Whale trades
+            // Whale trades — backend uses appendleft so index 0 = newest
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
-                d.whaleTrades = serverCoin.whale_trades;
+                d.whaleTrades = serverCoin.whale_trades.slice(0, 200);
                 d.totalBuyVolume = serverCoin.total_buy_vol;
                 d.totalSellVolume = serverCoin.total_sell_vol;
                 d.buyCount = serverCoin.buy_count;
@@ -1712,7 +1601,7 @@ class WhaleFlowDashboard {
                     funding: (sa.metrics && sa.metrics.funding) || 0,
                 };
 
-                // Load absorption snapshots
+                // Load absorption snapshots (backend time is seconds → ms)
                 if (sa.snapshots && sa.snapshots.length > 0) {
                     d.abs.snapshots = sa.snapshots.map(s => ({
                         time: s.time * 1000,
@@ -1730,14 +1619,19 @@ class WhaleFlowDashboard {
                 d.abs.lastTradePrice = serverCoin.last_trade_price || serverCoin.mark_px;
             }
 
-            // Mega whales
+            // Mega whales — backend uses appendleft so index 0 = newest
             if (serverCoin.mega_whales && serverCoin.mega_whales.length > 0) {
-                d.megaWhales = serverCoin.mega_whales;
+                d.megaWhales = serverCoin.mega_whales.slice(0, 100);
             }
 
-            // Reversal Radar signals
+            // Reversal Radar signals — convert signal times from backend seconds → ms
             if (serverCoin.signals) {
                 d.signals = serverCoin.signals;
+                ['initiative', 'clustering', 'funding_flip'].forEach(key => {
+                    if (d.signals[key] && d.signals[key].time) {
+                        d.signals[key].time = d.signals[key].time * 1000;
+                    }
+                });
             }
             if (serverCoin.alert_level !== undefined) {
                 d.alertLevel = serverCoin.alert_level;
@@ -1747,6 +1641,45 @@ class WhaleFlowDashboard {
             // Volume buckets
             if (serverCoin.volume_buckets) {
                 d.volumeBuckets = serverCoin.volume_buckets;
+            }
+            // Flip state — converts backend epoch-seconds to ms
+            if (serverCoin.flip_state) {
+                const fs = serverCoin.flip_state;
+                d.flipState = {
+                    currentSign:        fs.current_sign        || null,
+                    lastSign:           fs.last_sign           || null,
+                    lastSignTime:       (fs.last_sign_time     || 0) * 1000,
+                    lastFundingValue:   fs.last_funding_value  || 0,
+                    flipHistory:        (fs.flip_history       || []).map(f => ({
+                        from: f.from, to: f.to,
+                        time: (f.time || 0) * 1000,
+                        fromRate: f.from_rate || 0,
+                        toRate: f.to_rate || 0,
+                    })),
+                    chaosActive:        fs.chaos_active        || false,
+                    chaosResolved:      fs.chaos_resolved      || false,
+                    chaosResolvedSide:  fs.chaos_resolved_side || null,
+                    chaosResolvedTime: (fs.chaos_resolved_time || 0) * 1000,
+                };
+            }
+
+            // Market Regime — eliminates warmup on refresh
+            if (serverCoin.regime) {
+                const r = serverCoin.regime;
+                d.regime.score          = r.score        || 50;
+                d.regime.label          = r.label        || 'ANALYZING…';
+                d.regime.cssClass       = r.css_class    || '';
+                d.regime.lastChangeTime = (r.last_change_time || 0) * 1000;
+                d.regime.rangeScore     = r.range_score  || 0;
+                d.regime.volumeScore    = r.volume_score || 0;
+                d.regime.cvdScore       = r.cvd_score    || 0;
+                d.regime.balanceScore   = r.balance_score || 0;
+                if (Array.isArray(r.price_history)) {
+                    d.regime.priceHistory = r.price_history.map(p => ({
+                        time:  p.time * 1000,
+                        price: p.price
+                    }));
+                }
             }
         });
 
@@ -1849,13 +1782,13 @@ class WhaleFlowDashboard {
             }
         }
 
-        // 5. Funding Extreme
+        // 5. Funding Extreme — tracks sign only (positive = longs paying = bearish pressure)
         if (this.fundingData && this.fundingData.funding !== undefined) {
             const ratePct = this.fundingData.funding * 100;
-            if (ratePct > 0.03) {
-                sigs.funding_extreme = { active: true, side: 'bearish', detail: `Funding ${ratePct.toFixed(4)}% — longs overleveraged` };
-            } else if (ratePct < -0.03) {
-                sigs.funding_extreme = { active: true, side: 'bullish', detail: `Funding ${ratePct.toFixed(4)}% — shorts overleveraged` };
+            if (ratePct > 0) {
+                sigs.funding_extreme = { active: true, side: 'bearish', detail: `Funding +${ratePct.toFixed(4)}% — longs paying (bearish pressure)` };
+            } else if (ratePct < 0) {
+                sigs.funding_extreme = { active: true, side: 'bullish', detail: `Funding ${ratePct.toFixed(4)}% — shorts paying (bullish pressure)` };
             } else {
                 sigs.funding_extreme = { active: false, side: null, detail: '' };
             }
