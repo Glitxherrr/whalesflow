@@ -321,6 +321,10 @@ class WhaleFlowDashboard {
 
         try {
             this.localWs = new WebSocket('ws://127.0.0.1:8765');
+            this.localWs.onopen = () => {
+                console.log('Local backend connected successfully');
+                this.localWsActive = true;
+            };
             this.localWs.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
@@ -329,11 +333,24 @@ class WhaleFlowDashboard {
                 } catch (err) { /* ignore */ }
             };
             this.localWs.onclose = (event) => {
-                console.log('Local WS closed, scheduling reconnect:', event.code, event.reason);
-                this.scheduleReconnect();
+                console.log('Local WS closed, falling back to all public exchanges direct natively:', event.code, event.reason);
+                this.localWsActive = false;
+                // Cloud Deployment Fallback: Subscribe to HL trades directly
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        method: 'subscribe',
+                        subscription: { type: 'trades', coin: this.currentCoin }
+                    }));
+                }
+                setTimeout(() => {
+                    if(!this.publicExchangesConnected) {
+                        this.connectPublicExchanges();
+                        this.publicExchangesConnected = true;
+                    }
+                }, 1000);
             };
             this.localWs.onerror = (err) => {
-                console.error('Local WS error:', err);
+                console.error('Local WS error, gracefully falling back...');
             };
         } catch (err) {
             console.error('Local WebSocket creation failed:', err);
@@ -345,6 +362,17 @@ class WhaleFlowDashboard {
             this.reconnectAttempts = 0;
             this.updateConnectionStatus('connected');
             this.subscribeAll();
+
+            // Check if localWs is active after a short delay, otherwise fallback
+            setTimeout(() => {
+                if (!this.localWsActive && this.ws.readyState === WebSocket.OPEN) {
+                    console.warn('Local proxy unreachable. Falling back directly to Hyperliquid trades feed.');
+                    this.ws.send(JSON.stringify({
+                        method: 'subscribe',
+                        subscription: { type: 'trades', coin: this.currentCoin }
+                    }));
+                }
+            }, 1500);
 
             this._pingInterval = setInterval(() => {
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -411,6 +439,14 @@ class WhaleFlowDashboard {
                 method: 'unsubscribe',
                 subscription: { type: 'l2Book', coin: oldCoin }
             }));
+            
+            // Unsubscribe from trades if we are in fallback mode
+            if (!this.localWsActive) {
+                this.ws.send(JSON.stringify({
+                    method: 'unsubscribe',
+                    subscription: { type: 'trades', coin: oldCoin }
+                }));
+            }
         }
 
         this.currentCoin = newCoin;
@@ -456,6 +492,14 @@ class WhaleFlowDashboard {
                 method: 'subscribe',
                 subscription: { type: 'l2Book', coin: newCoin }
             }));
+            
+            // Subscribe to trades if we are in fallback mode
+            if (!this.localWsActive) {
+                this.ws.send(JSON.stringify({
+                    method: 'subscribe',
+                    subscription: { type: 'trades', coin: newCoin }
+                }));
+            }
         }
         this.fetchFundingData();
         this.renderAbsorptionUI();
@@ -464,6 +508,137 @@ class WhaleFlowDashboard {
         this.renderRegime();
 
         this.showToast(`🔄 Switched to ${newCoin}`);
+    }
+
+    handleExternalTrade(t) {
+        this.handleTrades([t]);
+    }
+
+    connectPublicExchanges() {
+        console.log('Connecting to public exchanges natively from browser... (Binance, OKX, Kraken, Bybit, Coinbase)');
+        const coins = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'];
+
+        // 1. Binance
+        try {
+            const binanceStreams = coins.map(c => `${c.toLowerCase()}usdt@aggTrade`).join('/');
+            this.binanceWs = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${binanceStreams}`);
+            this.binanceWs.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.data) {
+                        const s = msg.data.s.replace('USDT', '');
+                        if (coins.includes(s)) {
+                            this.handleExternalTrade({
+                                coin: s, px: msg.data.p, sz: msg.data.q, side: msg.data.m ? 'S' : 'B', time: msg.data.T, exchange: 'BIN'
+                            });
+                        }
+                    }
+                } catch(err){}
+            };
+        } catch(err){}
+
+        // 2. Bybit
+        try {
+            this.bybitWs = new WebSocket("wss://stream.bybit.com/v5/public/linear");
+            this.bybitWs.onopen = () => {
+                const args = coins.map(c => `publicTrade.${c}USDT`);
+                this.bybitWs.send(JSON.stringify({op: "subscribe", args: args}));
+            };
+            this.bybitWs.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.data && Array.isArray(msg.data)) {
+                        msg.data.forEach(t => {
+                            const coin = msg.topic.split('.')[1].replace('USDT', '');
+                            if (coins.includes(coin)) {
+                                this.handleExternalTrade({
+                                    coin: coin, px: t.p, sz: t.v, side: t.S === 'Buy' ? 'B' : 'S', time: parseInt(t.T), exchange: 'BYB'
+                                });
+                            }
+                        });
+                    }
+                } catch(err){}
+            };
+        } catch(err){}
+
+        // 3. OKX
+        try {
+            this.okxWs = new WebSocket("wss://ws.okx.com:8443/ws/v5/public");
+            this.okxWs.onopen = () => {
+                const args = coins.map(c => ({channel: "trades", instId: `${c}-USDT-SWAP`}));
+                this.okxWs.send(JSON.stringify({op: "subscribe", args: args}));
+            };
+            this.okxWs.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.arg && msg.arg.channel === 'trades' && msg.data) {
+                        msg.data.forEach(t => {
+                            const coin = t.instId.split('-')[0];
+                            if (coins.includes(coin)) {
+                                this.handleExternalTrade({
+                                    coin: coin, px: t.px, sz: t.sz, side: t.side === 'buy' ? 'B' : 'S', time: parseInt(t.ts), exchange: 'OKX'
+                                });
+                            }
+                        });
+                    }
+                } catch(err){}
+            };
+        } catch(err){}
+
+        // 4. Kraken
+        try {
+            this.krakenWs = new WebSocket("wss://ws.kraken.com/v2");
+            this.krakenWs.onopen = () => {
+                const args = coins.map(c => `${c}/USD`);
+                this.krakenWs.send(JSON.stringify({
+                    method: "subscribe",
+                    params: { channel: "trade", symbol: args }
+                }));
+            };
+            this.krakenWs.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.channel === 'trade' && msg.type === 'update') {
+                        msg.data.forEach(t => {
+                            const coin = t.symbol.split('/')[0];
+                            if (coins.includes(coin)) {
+                                const dtime = new Date(t.timestamp).getTime();
+                                this.handleExternalTrade({
+                                    coin: coin, px: t.price, sz: t.qty, side: t.side === 'buy' ? 'B' : 'S', time: dtime, exchange: 'KRK'
+                                });
+                            }
+                        });
+                    }
+                } catch(err){}
+            };
+        } catch(err){}
+
+        // 5. Coinbase
+        try {
+            this.coinbaseWs = new WebSocket("wss://ws-feed.exchange.coinbase.com");
+            this.coinbaseWs.onopen = () => {
+                const args = coins.map(c => `${c}-USD`);
+                this.coinbaseWs.send(JSON.stringify({
+                    type: "subscribe",
+                    product_ids: args,
+                    channels: ["matches"]
+                }));
+            };
+            this.coinbaseWs.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    if (msg.type === 'match') {
+                        const coin = msg.product_id.split('-')[0];
+                        if (coins.includes(coin)) {
+                            const dtime = new Date(msg.time).getTime();
+                            this.handleExternalTrade({
+                                coin: coin, px: msg.price, sz: msg.size, side: msg.side === 'buy' ? 'B' : 'S', time: dtime, exchange: 'CB'
+                            });
+                        }
+                    }
+                } catch(err){}
+            };
+        } catch(err){}
     }
 
     // ==================== MESSAGE HANDLING ====================
