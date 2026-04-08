@@ -46,6 +46,9 @@ class HyperliquidCollector:
         self.connected = False
         self.started_at = None
 
+        self.local_clients = set()
+        self.local_loop = None
+
         for coin in self.coins:
             self.data[coin] = self._new_coin_data()
 
@@ -57,6 +60,8 @@ class HyperliquidCollector:
             'total_sell_vol': 0.0,
             'buy_count': 0,
             'sell_count': 0,
+            'whale_buckets': deque(maxlen=1440), # up to 24h of 1-minute buckets
+
 
             # Mega whales (initiative + clustering events)
             'mega_whales': deque(maxlen=100),
@@ -95,24 +100,11 @@ class HyperliquidCollector:
                 'oi_divergence':  {'active': False, 'side': None, 'detail': ''},
                 'volume_climax':  {'active': False, 'side': None, 'detail': ''},
                 'funding_extreme': {'active': False, 'side': None, 'detail': ''},
-                'funding_flip':   {'active': False, 'side': None, 'detail': '', 'time': 0, 'acknowledged': False},
                 'initiative':    {'active': False, 'side': None, 'detail': '', 'time': 0},
                 'clustering':    {'active': False, 'side': None, 'detail': '', 'time': 0},
             },
             'alert_level': 0,
             'alert_label': 'Quiet',
-
-            # Funding Flip tracking
-            'flip_state': {
-                'last_sign': None,
-                'last_sign_time': 0,
-                'last_funding_value': 0,
-                'flip_history': [],
-                'chaos_active': False,
-                'chaos_resolved': False,
-                'chaos_resolved_side': None,
-                'chaos_resolved_time': 0,
-            },
 
             # Market Regime detector (persistent)
             'regime': {
@@ -137,10 +129,16 @@ class HyperliquidCollector:
         self.started_at = time.time()
 
         threading.Thread(target=self._run_ws, daemon=True, name='ws').start()
+        threading.Thread(target=self._run_ws_binance, daemon=True, name='ws_binance').start()
+        threading.Thread(target=self._run_ws_bybit, daemon=True, name='ws_bybit').start()
+        threading.Thread(target=self._run_ws_okx, daemon=True, name='ws_okx').start()
+        threading.Thread(target=self._run_ws_kraken, daemon=True, name='ws_kraken').start()
+        threading.Thread(target=self._run_ws_coinbase, daemon=True, name='ws_coinbase').start()
         threading.Thread(target=self._run_funding, daemon=True, name='funding').start()
         threading.Thread(target=self._run_snapshots, daemon=True, name='snapshots').start()
         threading.Thread(target=self._run_signals, daemon=True, name='signals').start()
         threading.Thread(target=self._run_pressure, daemon=True, name='pressure').start()
+        threading.Thread(target=self._run_local_server, daemon=True, name='local_ws').start()
 
         print(f"[Collector] Started at {datetime.now().isoformat()}")
 
@@ -172,13 +170,224 @@ class HyperliquidCollector:
                 try:
                     msg = json.loads(raw)
                     if msg.get('channel') == 'trades' and 'data' in msg:
-                        self._process_trades(msg['data'])
+                        # Append exchange flag to HL trades
+                        hw_trades = []
+                        for t in msg['data']:
+                            t['exchange'] = 'HL'
+                            hw_trades.append(t)
+                        self._process_trades(hw_trades)
+                except Exception:
+                    pass
+
+    def _run_ws_binance(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_binance())
+            except Exception as e:
+                print(f"[WS Binance] Error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_binance(self):
+        streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
+        url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            print("[WS Binance] Connected")
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'data' in msg:
+                        data = msg['data']
+                        symbol = data['s']
+                        coin = symbol.replace('USDT', '')
+                        if coin not in self.coins:
+                            continue
+                        
+                        mapped_trade = {
+                            'coin': coin,
+                            'px': data['p'],
+                            'sz': data['q'],
+                            'side': 'S' if data['m'] else 'B',
+                            'time': data['T'],
+                            'exchange': 'BIN'
+                        }
+                        self._process_trades([mapped_trade])
+                except Exception:
+                    pass
+
+    def _run_ws_bybit(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_bybit())
+            except Exception as e:
+                print(f"[WS Bybit] Error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_bybit(self):
+        url = "wss://stream.bybit.com/v5/public/linear"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            print("[WS Bybit] Connected")
+            args = [f"publicTrade.{coin}USDT" for coin in self.coins]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'data' in msg and isinstance(msg['data'], list):
+                        parsed_trades = []
+                        for t in msg['data']:
+                            coin = msg['topic'].split('.')[1].replace('USDT', '')
+                            if coin in self.coins:
+                                parsed_trades.append({
+                                    'coin': coin,
+                                    'px': float(t['p']),
+                                    'sz': float(t['v']),
+                                    'side': 'B' if t['S'] == 'Buy' else 'S',
+                                    'time': int(t['T']),
+                                    'exchange': 'BYB'
+                                })
+                        if parsed_trades:
+                            self._process_trades(parsed_trades)
+                except Exception:
+                    pass
+
+    def _run_ws_okx(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_okx())
+            except Exception as e:
+                print(f"[WS OKX] Error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_okx(self):
+        url = "wss://ws.okx.com:8443/ws/v5/public"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            print("[WS OKX] Connected")
+            args = [{"channel": "trades", "instId": f"{coin}-USDT-SWAP"} for coin in self.coins]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('arg', {}).get('channel') == 'trades' and 'data' in msg:
+                        parsed_trades = []
+                        for t in msg['data']:
+                            coin = t['instId'].split('-')[0]
+                            if coin in self.coins:
+                                parsed_trades.append({
+                                    'coin': coin,
+                                    'px': float(t['px']),
+                                    'sz': float(t['sz']),
+                                    'side': 'B' if t['side'] == 'buy' else 'S',
+                                    'time': int(t['ts']),
+                                    'exchange': 'OKX'
+                                })
+                        if parsed_trades:
+                            self._process_trades(parsed_trades)
+                except Exception:
+                    pass
+
+
+    def _run_ws_kraken(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_kraken())
+            except Exception as e:
+                print(f"[WS Kraken] Error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_kraken(self):
+        url = "wss://ws.kraken.com/v2"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            print("[WS Kraken] Connected")
+            args = [f"{coin}/USD" for coin in self.coins]
+            await ws.send(json.dumps({
+                "method": "subscribe",
+                "params": {
+                    "channel": "trade",
+                    "symbol": args
+                }
+            }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('channel') == 'trade' and msg.get('type') == 'update':
+                        parsed_trades = []
+                        for t in msg.get('data', []):
+                            coin = t['symbol'].split('/')[0]
+                            if coin in self.coins:
+                                dtime = datetime.fromisoformat(t['timestamp'].replace('Z', '+00:00'))
+                                parsed_trades.append({
+                                    'coin': coin,
+                                    'px': float(t['price']),
+                                    'sz': float(t['qty']),
+                                    'side': 'B' if t['side'] == 'buy' else 'S',
+                                    'time': int(dtime.timestamp() * 1000),
+                                    'exchange': 'KRK'
+                                })
+                        if parsed_trades:
+                            self._process_trades(parsed_trades)
+                except Exception:
+                    pass
+
+    def _run_ws_coinbase(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_coinbase())
+            except Exception as e:
+                print(f"[WS Coinbase] Error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_coinbase(self):
+        url = "wss://ws-feed.exchange.coinbase.com"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            print("[WS Coinbase] Connected")
+            args = [f"{coin}-USD" for coin in self.coins]
+            await ws.send(json.dumps({
+                "type": "subscribe",
+                "product_ids": args,
+                "channels": ["matches"]
+            }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('type') == 'match':
+                        coin = msg['product_id'].split('-')[0]
+                        if coin in self.coins:
+                            dtime = datetime.fromisoformat(msg['time'].replace('Z', '+00:00'))
+                            parsed_trade = {
+                                'coin': coin,
+                                'px': float(msg['price']),
+                                'sz': float(msg['size']),
+                                'side': 'B' if msg['side'] == 'buy' else 'S',
+                                'time': int(dtime.timestamp() * 1000),
+                                'exchange': 'CB'
+                            }
+                            self._process_trades([parsed_trade])
                 except Exception:
                     pass
 
     # ==================== TRADE PROCESSING ====================
 
     def _process_trades(self, trades):
+        # Broadcast to local websocket clients First
+        if self.local_loop and self.local_clients:
+            formatted = {
+                'channel': 'trades',
+                'data': trades
+            }
+            msg_str = json.dumps(formatted)
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_local(msg_str), self.local_loop
+            )
+
         with self._data_lock:
             for trade in trades:
                 coin = trade.get('coin', 'BTC')
@@ -190,6 +399,7 @@ class HyperliquidCollector:
                 value = price * size
                 is_buy = trade['side'] == 'B'
                 trade_time = trade.get('time', int(time.time() * 1000))
+                exchange = trade.get('exchange', 'HL')
 
                 d = self.data[coin]
                 d['last_trade_price'] = price
@@ -204,6 +414,26 @@ class HyperliquidCollector:
 
                 # Whale tracking
                 if value >= self.whale_threshold:
+                    # Timeframe Bucketing (1-minute resolution)
+                    # Use server time if trade_time is missing or wildly wrong
+                    minute_ts = (trade_time // 60000) * 60000
+                    
+                    if not d['whale_buckets']:
+                        d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
+                    
+                    latest_bucket = d['whale_buckets'][-1]
+                    if minute_ts > latest_bucket['time']:
+                        d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
+                        latest_bucket = d['whale_buckets'][-1]
+                    
+                    if minute_ts == latest_bucket['time']:
+                        if is_buy:
+                            latest_bucket['buy'] += value
+                            latest_bucket['buy_count'] += 1
+                        else:
+                            latest_bucket['sell'] += value
+                            latest_bucket['sell_count'] += 1
+
                     is_mega = False
                     mega_type = None
 
@@ -222,13 +452,13 @@ class HyperliquidCollector:
                         d['mega_whales'].appendleft({
                             'time': trade_time, 'side': 'BUY' if is_buy else 'SELL',
                             'price': price, 'size': size, 'value': value,
-                            'coin': coin, 'mega_type': 'initiative',
+                            'coin': coin, 'mega_type': 'initiative', 'exchange': exchange
                         })
 
                     whale_entry = {
                         'time': trade_time, 'side': 'BUY' if is_buy else 'SELL',
                         'price': price, 'size': size, 'value': value, 'coin': coin,
-                        'is_mega': is_mega, 'mega_type': mega_type,
+                        'is_mega': is_mega, 'mega_type': mega_type, 'exchange': exchange
                     }
                     d['whale_trades'].appendleft(whale_entry)
 
@@ -279,6 +509,7 @@ class HyperliquidCollector:
                 'size': sum(t['size'] for t in cluster_trades),
                 'value': total_val, 'coin': coin,
                 'mega_type': 'clustering', 'cluster_count': count,
+                'exchange': 'MIX'
             })
 
     # ==================== FUNDING / OI POLLER ====================
@@ -310,56 +541,6 @@ class HyperliquidCollector:
                 d['oracle_px'] = float(ctx.get('oraclePx', '0'))
                 d['open_interest'] = float(ctx.get('openInterest', '0'))
                 d['day_volume'] = float(ctx.get('dayNtlVlm', '0'))
-
-                # --- Funding Flip detection ---
-                fs = d['flip_state']
-                funding = d['funding']
-                rate_pct = funding * 100
-                current_sign = 'positive' if funding >= 0 else 'negative'
-                now = time.time()
-
-                if fs['last_sign'] is None:
-                    fs['last_sign'] = current_sign
-                    fs['last_sign_time'] = now
-                    fs['last_funding_value'] = rate_pct
-                    continue
-
-                if current_sign != fs['last_sign'] and abs(fs['last_funding_value']) >= 0.005:
-                    # Flip detected
-                    fs['flip_history'].append({
-                        'time': now,
-                        'from': fs['last_sign'],
-                        'to': current_sign,
-                        'from_rate': fs['last_funding_value'],
-                        'to_rate': rate_pct,
-                    })
-                    if len(fs['flip_history']) > 20:
-                        fs['flip_history'] = fs['flip_history'][-20:]
-
-                    fs['chaos_resolved'] = False
-                    fs['chaos_resolved_side'] = None
-                    fs['chaos_resolved_time'] = 0
-
-                    side = 'bullish' if current_sign == 'negative' else 'bearish'
-                    d['signals']['funding_flip'] = {
-                        'active': True, 'side': side,
-                        'detail': f"Flipped {fs['last_sign']} -> {current_sign} ({fs['last_funding_value']:.4f}% -> {rate_pct:.4f}%)",
-                        'time': now, 'acknowledged': False,
-                    }
-
-                    fs['last_sign'] = current_sign
-                    fs['last_sign_time'] = now
-                elif current_sign == fs['last_sign']:
-                    # Check chaos resolution: same sign for 2 hours
-                    if fs['flip_history'] and not fs['chaos_resolved'] and now - fs['last_sign_time'] >= 7200:
-                        fs['chaos_resolved'] = True
-                        fs['chaos_resolved_side'] = 'bullish' if current_sign == 'positive' else 'bearish'
-                        fs['chaos_resolved_time'] = now
-                        fs['chaos_active'] = False
-
-                # Chaos stays active as long as there are flips and no resolution
-                fs['chaos_active'] = len(fs['flip_history']) > 0 and not fs['chaos_resolved']
-                fs['last_funding_value'] = rate_pct
 
                 # --- Market Regime evaluation ---
                 self._evaluate_regime(coin, d)
@@ -629,11 +810,8 @@ class HyperliquidCollector:
                     else:
                         sigs['clustering'] = {'active': False, 'side': None, 'detail': '', 'time': 0}
 
-                # 8. Funding Flip — stays until acknowledged
-                s_flip = sigs['funding_flip']['active']
-
                 # Count actives
-                active_count = sum([s_abs, bool(s_cvd), bool(s_oi), bool(s_climax), bool(s_fund), s_flip, s_init, s_clust])
+                active_count = sum([s_abs, bool(s_cvd), bool(s_oi), bool(s_climax), bool(s_fund)])
                 d['alert_level'] = min(active_count, 4)
 
                 if active_count == 0:
@@ -845,7 +1023,46 @@ class HyperliquidCollector:
                         'snapshots': list(d['abs_snapshots']),
                     },
                     'volume_buckets': list(d['volume_buckets']),
-                    'flip_state': d['flip_state'],
                     'regime': d['regime'],
                 }
             return state
+
+    # ==================== LOCAL WS SERVER ====================
+
+    def _run_local_server(self):
+        self.local_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.local_loop)
+        
+        async def main():
+            async with websockets.serve(self._local_ws_handler, "127.0.0.1", 8765):
+                print("[Collector] Local WS Server running on ws://127.0.0.1:8765")
+                await asyncio.Future()  # run forever
+
+        try:
+            self.local_loop.run_until_complete(main())
+        except Exception as e:
+            print(f"[Collector] Local WS Server error: {e}")
+
+    async def _local_ws_handler(self, websocket):
+        self.local_clients.add(websocket)
+        try:
+            async for message in websocket:
+                # We can handle ping/pong if necessary, but frontend sends ping
+                try:
+                    data = json.loads(message)
+                    if data.get('method') == 'ping':
+                        await websocket.send(json.dumps({'channel': 'pong'}))
+                except:
+                    pass
+        finally:
+            self.local_clients.remove(websocket)
+
+    async def _broadcast_local(self, msg_str):
+        if not self.local_clients:
+            return
+        # Broadcast concurrently
+        # websockets < 11.0: can't easily wait concurrently without gather
+        await asyncio.gather(
+            *(client.send(msg_str) for client in self.local_clients),
+            return_exceptions=True
+        )
