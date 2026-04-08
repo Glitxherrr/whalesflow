@@ -328,6 +328,77 @@ body {
     text-align: right;
 }
 
+/* ===== Timeframe Bar ===== */
+.timeframe-bar {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 10px 24px;
+    margin: 0 24px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    backdrop-filter: blur(10px);
+}
+
+.tf-bar-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+}
+
+.tf-bar-buttons {
+    display: flex;
+    gap: 6px;
+    background: rgba(0,0,0,0.4);
+    padding: 4px;
+    border-radius: 10px;
+    border: 1px solid var(--border-color);
+}
+
+.tf-bar-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    letter-spacing: 1px;
+}
+
+.tf-bar-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.06);
+}
+
+.tf-bar-btn.active {
+    background: linear-gradient(135deg, rgba(102,126,234,0.25), rgba(118,75,226,0.25));
+    color: #fff;
+    box-shadow: 0 0 12px rgba(102,126,234,0.3), inset 0 1px 0 rgba(255,255,255,0.1);
+    border: 1px solid rgba(102,126,234,0.4);
+}
+
+.tf-bar-hint {
+    font-size: 0.7rem;
+    color: var(--text-tertiary);
+    white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+    .timeframe-bar { flex-wrap: wrap; gap: 8px; }
+    .tf-bar-label { display: none; }
+    .tf-bar-btn { padding: 6px 14px; font-size: 0.75rem; }
+}
+
 /* ===== Summary Section ===== */
 .summary-section {
     position: relative;
@@ -850,7 +921,7 @@ body {
 
 .trades-header-row {
     display: grid;
-    grid-template-columns: 1fr 0.6fr 1fr 0.8fr 1fr;
+    grid-template-columns: 1fr 0.5fr 1.1fr 0.8fr 0.5fr 0.9fr;
     padding: 8px 16px;
     font-size: 0.68rem;
     font-weight: 600;
@@ -859,6 +930,9 @@ body {
     letter-spacing: 0.5px;
     border-bottom: 1px solid var(--border-color);
 }
+
+.center-col { text-align: center; }
+.right-col { text-align: right; }
 
 .trades-list {
     flex: 1;
@@ -877,12 +951,11 @@ body {
 
 .trade-row {
     display: grid;
-    grid-template-columns: 1fr 0.6fr 1fr 0.8fr 1fr;
+    grid-template-columns: 1fr 0.5fr 1.1fr 0.8fr 0.5fr 0.9fr;
     padding: 8px 16px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.75rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-    animation: tradeSlideIn 0.4s ease;
     transition: background var(--transition-fast);
 }
 
@@ -890,18 +963,6 @@ body {
     background: rgba(255, 255, 255, 0.03);
 }
 
-@keyframes tradeSlideIn {
-    from {
-        opacity: 0;
-        transform: translateX(-20px);
-        background: rgba(255, 255, 255, 0.06);
-    }
-    to {
-        opacity: 1;
-        transform: translateX(0);
-        background: transparent;
-    }
-}
 
 .trade-row .trade-time { color: var(--text-secondary); }
 .trade-row .trade-side {
@@ -912,6 +973,12 @@ body {
 .trade-row.sell-trade .trade-side { color: var(--sell-primary); }
 .trade-row .trade-price { color: var(--text-primary); }
 .trade-row .trade-size { color: var(--text-primary); }
+.trade-row .trade-exch { 
+    text-align: center;
+    color: var(--text-secondary); 
+    font-size: 0.8em; 
+    opacity: 0.7; 
+}
 .trade-row .trade-value { 
     font-weight: 600;
     text-align: right;
@@ -970,10 +1037,48 @@ body {
 }
 
 .analytics-section h3 {
-    font-size: 0.78rem;
-    font-weight: 600;
+    font-size: 0.85rem;
     color: var(--text-secondary);
-    margin-bottom: 10px;
+    margin-bottom: 12px;
+    font-weight: 600;
+}
+
+.section-header-flex {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+.section-header-flex h3 {
+    margin-bottom: 0;
+}
+
+.timeframe-toggles {
+    display: flex;
+    gap: 4px;
+    background: rgba(0,0,0,0.3);
+    padding: 3px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+}
+.tf-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+.tf-btn:hover {
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.05);
+}
+.tf-btn.active {
+    background: rgba(255,255,255,0.1);
+    color: var(--text-primary);
 }
 
 .imbalance-bar-wrapper {
@@ -1493,6 +1598,23 @@ body {
     border-color: rgba(255, 71, 87, 0.15);
 }
 
+.signal-divider {
+    height: 1px;
+    background: var(--border-color);
+    margin: 8px 0;
+    opacity: 0.5;
+}
+
+.signal-divider-title {
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    padding-left: 10px;
+    margin-bottom: 4px;
+    font-weight: 700;
+}
+
 .signal-dot {
     font-size: 0.9rem;
     text-align: center;
@@ -1542,60 +1664,7 @@ body {
     transform: scale(1.05);
 }
 
-/* Signal row with ack button needs extra column */
-#sigFlip {
-    grid-template-columns: 20px 22px 1fr auto auto;
-}
 
-/* Funding Chaos Bar */
-.flip-chaos-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    margin: 4px 0;
-    border-radius: 6px;
-    font-size: 0.72rem;
-    background: rgba(255, 165, 0, 0.05);
-    border: 1px solid rgba(255, 165, 0, 0.15);
-    animation: pulse 3s infinite;
-}
-
-.flip-chaos-bar.resolved {
-    background: rgba(0, 230, 138, 0.05);
-    border-color: rgba(0, 230, 138, 0.2);
-    animation: none;
-}
-
-.chaos-icon { font-size: 0.9rem; }
-
-.chaos-text {
-    flex: 1;
-    color: var(--text-primary);
-    font-weight: 500;
-}
-
-.chaos-level {
-    font-weight: 700;
-    font-size: 0.68rem;
-    padding: 2px 8px;
-    border-radius: 4px;
-}
-
-.chaos-level.indecision {
-    background: rgba(255, 214, 0, 0.15);
-    color: #ffd600;
-}
-
-.chaos-level.extreme {
-    background: rgba(255, 60, 60, 0.15);
-    color: #ff3c3c;
-}
-
-.chaos-level.resolved {
-    background: rgba(0, 230, 138, 0.15);
-    color: var(--buy-primary);
-}
 
 /* Mega Whales Card */
 .mega-whales-card { padding: 20px; }

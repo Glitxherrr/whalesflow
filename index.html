@@ -66,6 +66,18 @@
         </div>
     </div>
 
+    <!-- Timeframe Selector -->
+    <div class="timeframe-bar" id="timeframeBar">
+        <div class="tf-bar-label">⏱️ Whale Volume Timeframe</div>
+        <div class="tf-bar-buttons" id="tfWhaleVolume">
+            <button class="tf-bar-btn" data-tf="1h">1H</button>
+            <button class="tf-bar-btn" data-tf="4h">4H</button>
+            <button class="tf-bar-btn" data-tf="24h">24H</button>
+            <button class="tf-bar-btn active" data-tf="Live">LIVE</button>
+        </div>
+        <div class="tf-bar-hint" id="tfBarHint">Showing all session data</div>
+    </div>
+
     <!-- Summary Cards Section -->
     <section class="summary-section" id="summarySection">
         <!-- Whale Buys Card -->
@@ -214,7 +226,8 @@
                     <span>Side</span>
                     <span>Price</span>
                     <span>Size</span>
-                    <span>Value</span>
+                    <span class="center-col">Exch</span>
+                    <span class="right-col">Value</span>
                 </div>
                 <div class="trades-list" id="tradesList">
                     <div class="empty-state">
@@ -399,7 +412,7 @@
                         <span class="alert-level-icon" id="alertLevelIcon">🟢</span>
                         <span class="alert-level-text" id="alertLevelText">QUIET</span>
                     </div>
-                    <div class="radar-alert-sub" id="radarAlertSub">0 / 8 signals active — no reversal conditions detected</div>
+                    <div class="radar-alert-sub" id="radarAlertSub">0 / 5 signals active — no reversal conditions detected</div>
                     <div class="radar-alert-bar">
                         <div class="radar-alert-fill" id="radarAlertFill" style="width:0%"></div>
                     </div>
@@ -437,19 +450,10 @@
                         <span class="signal-name">Funding Extreme</span>
                         <span class="signal-detail mono" id="sigFundingDetail">—</span>
                     </div>
-                    <div class="signal-row" id="sigFlip">
-                        <span class="signal-dot" id="sigFlipDot">○</span>
-                        <span class="signal-icon">🔄</span>
-                        <span class="signal-name">Funding Flip</span>
-                        <span class="signal-detail mono" id="sigFlipDetail">—</span>
-                        <button class="ack-btn" id="sigFlipAck" style="display:none" title="Acknowledge">✓</button>
-                    </div>
-                    <div class="flip-chaos-bar" id="flipChaosBar" style="display:none">
-                        <span class="chaos-icon">⚡</span>
-                        <span class="chaos-text" id="flipChaosText">0 flips in 1h</span>
-                        <span class="chaos-level" id="flipChaosLevel">Normal</span>
-                        <button class="ack-btn" id="chaosAck" style="display:none" title="Acknowledge">✓</button>
-                    </div>
+                    
+                    <div class="signal-divider"></div>
+                    <div class="signal-divider-title">Whale Flow Indicators</div>
+
                     <div class="signal-row" id="sigInitiative">
                         <span class="signal-dot" id="sigInitiativeDot">○</span>
                         <span class="signal-icon">🐋</span>

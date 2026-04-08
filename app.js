@@ -43,6 +43,7 @@ class WhaleFlowDashboard {
         this.sellCount = 0;
         this.pressureHistory = [];
         this.lastPressureSnapshot = { buys: 0, sells: 0 };
+        this.whaleVolumeTimeframe = 'Live';
 
         // DOM cache
         this.elements = {};
@@ -79,6 +80,7 @@ class WhaleFlowDashboard {
             totalSellVolume: 0,
             buyCount: 0,
             sellCount: 0,
+            whaleBuckets: [],
             pressureHistory: [],
             lastPressureSnapshot: { buys: 0, sells: 0 },
 
@@ -105,25 +107,11 @@ class WhaleFlowDashboard {
                 oi_divergence:  { active: false, side: null, detail: '' },
                 volume_climax:  { active: false, side: null, detail: '' },
                 funding_extreme: { active: false, side: null, detail: '' },
-                funding_flip:   { active: false, side: null, detail: '', time: 0, acknowledged: false },
                 initiative:    { active: false, side: null, detail: '', time: 0 },
                 clustering:    { active: false, side: null, detail: '', time: 0 },
             },
             alertLevel: 0,
             alertLabel: 'Quiet',
-
-            // Funding Flip tracking
-            flipState: {
-                currentSign: null,        // current sign ('positive'/'negative')
-                lastSign: null,           // previous sign before last flip
-                lastSignTime: 0,          // when current sign started
-                lastFundingValue: 0,
-                flipHistory: [],          // [{time, from, to, rate}]
-                chaosActive: false,
-                chaosResolved: false,
-                chaosResolvedSide: null,
-                chaosResolvedTime: 0,
-            },
 
             // Volume buckets for climax
             volumeBuckets: [],
@@ -207,8 +195,6 @@ class WhaleFlowDashboard {
             'sigFunding', 'sigFundingDot', 'sigFundingDetail',
             'sigInitiative', 'sigInitiativeDot', 'sigInitiativeDetail',
             'sigClustering', 'sigClusteringDot', 'sigClusteringDetail',
-            'sigFlip', 'sigFlipDot', 'sigFlipDetail', 'sigFlipAck',
-            'flipChaosBar', 'flipChaosText', 'flipChaosLevel', 'chaosAck',
 
             // Market Regime
             'regimeBar', 'regimeDot', 'regimeLabel',
@@ -276,34 +262,30 @@ class WhaleFlowDashboard {
             this.showToast('🗑️ Trade history cleared');
         });
 
-        // Funding Flip acknowledge button
-        if (this.elements.sigFlipAck) {
-            this.elements.sigFlipAck.addEventListener('click', () => {
-                const d = this.getCoinData(this.currentCoin);
-                d.signals.funding_flip.acknowledged = true;
-                d.signals.funding_flip.active = false;
-                // Store in localStorage for persistence across refreshes
-                const acked = JSON.parse(localStorage.getItem('acked_flips') || '[]');
-                acked.push(d.signals.funding_flip.time);
-                localStorage.setItem('acked_flips', JSON.stringify(acked.slice(-50)));
-                this.renderReversalRadar();
-                this.showToast('✓ Funding flip acknowledged');
+        // Timeframe selector (top bar)
+        const tfContainer = document.getElementById('tfWhaleVolume');
+        if (tfContainer) {
+            tfContainer.addEventListener('click', (e) => {
+                const btn = e.target.closest('.tf-bar-btn');
+                if (!btn) return;
+                
+                tfContainer.querySelectorAll('.tf-bar-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                this.whaleVolumeTimeframe = btn.dataset.tf;
+                this.updateAnalytics();
+                this.updateSummaryCards();
+
+                // Update hint text
+                const hint = document.getElementById('tfBarHint');
+                if (hint) {
+                    const hints = { '1h': 'Last 1 hour of whale volume', '4h': 'Last 4 hours of whale volume', '24h': 'Last 24 hours of whale volume', 'Live': 'Showing all session data' };
+                    hint.textContent = hints[this.whaleVolumeTimeframe] || '';
+                }
             });
         }
 
-        // Chaos resolution acknowledge button
-        if (this.elements.chaosAck) {
-            this.elements.chaosAck.addEventListener('click', () => {
-                const d = this.getCoinData(this.currentCoin);
-                d.flipState.chaosResolved = false;
-                d.flipState.chaosActive = false;
-                d.flipState.chaosResolvedSide = null;
-                d.flipState.chaosResolvedTime = 0;
-                d.flipState.flipHistory = [];
-                this.renderReversalRadar();
-                this.showToast('✓ Chaos resolution acknowledged');
-            });
-        }
+
     }
 
     // ==================== WEBSOCKET ====================
@@ -314,6 +296,12 @@ class WhaleFlowDashboard {
             this.ws.onerror = null;
             this.ws.close();
             this.ws = null;
+        }
+        if (this.localWs) {
+            this.localWs.onclose = null;
+            this.localWs.onerror = null;
+            this.localWs.close();
+            this.localWs = null;
         }
 
         if (this._pingInterval) {
@@ -329,6 +317,26 @@ class WhaleFlowDashboard {
             console.error('WebSocket creation failed:', err);
             this.scheduleReconnect();
             return;
+        }
+
+        try {
+            this.localWs = new WebSocket('ws://127.0.0.1:8765');
+            this.localWs.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.channel === 'pong') return;
+                    this.handleMessage(msg);
+                } catch (err) { /* ignore */ }
+            };
+            this.localWs.onclose = (event) => {
+                console.log('Local WS closed, scheduling reconnect:', event.code, event.reason);
+                this.scheduleReconnect();
+            };
+            this.localWs.onerror = (err) => {
+                console.error('Local WS error:', err);
+            };
+        } catch (err) {
+            console.error('Local WebSocket creation failed:', err);
         }
 
         this.ws.onopen = () => {
@@ -372,13 +380,8 @@ class WhaleFlowDashboard {
     subscribeAll() {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
-        // Subscribe to trades for EVERY coin — continuous collection
-        this.coinList.forEach(coin => {
-            this.ws.send(JSON.stringify({
-                method: 'subscribe',
-                subscription: { type: 'trades', coin }
-            }));
-        });
+        // We no longer subscribe to Hyperliquid trades directly
+        // because we receive aggregated trades from localWs (Python backend)
 
         // L2 orderbook only for the active coin
         this.ws.send(JSON.stringify({
@@ -411,6 +414,23 @@ class WhaleFlowDashboard {
         }
 
         this.currentCoin = newCoin;
+
+        // Set coin-specific thresholds
+        if (newCoin === 'BTC') {
+            this.whaleThreshold = 50000;
+        } else if (newCoin === 'ETH') {
+            this.whaleThreshold = 10000;
+        } else if (newCoin === 'PAXG') {
+            this.whaleThreshold = 10;
+        } else if (newCoin === 'XRP') {
+            this.whaleThreshold = 50;
+        } else {
+            // SOL
+            this.whaleThreshold = 100;
+        }
+        if (this.elements.whaleThreshold) {
+            this.elements.whaleThreshold.value = this.whaleThreshold;
+        }
         this.orderbook = { bids: [], asks: [] };
         this.fundingData = null;
 
@@ -490,7 +510,8 @@ class WhaleFlowDashboard {
                 d.whaleTrades.unshift({
                     time: trade.time,
                     side: isBuy ? 'BUY' : 'SELL',
-                    price, size, value, coin
+                    price, size, value, coin,
+                    exchange: trade.exchange || 'HL'
                 });
 
                 if (d.whaleTrades.length > 500) {
@@ -521,12 +542,13 @@ class WhaleFlowDashboard {
                     };
                     d.megaWhales.unshift({
                         time: trade.time, side: isBuy ? 'BUY' : 'SELL',
-                        price, size, value, coin, mega_type: 'initiative'
+                        price, size, value, coin, mega_type: 'initiative',
+                        exchange: trade.exchange || 'HL'
                     });
                     if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
                     if (coin === this.currentCoin) {
                         this.renderMegaWhales();
-                        this.showToast(`🐋 INITIATIVE: $${(value/1e6).toFixed(2)}M ${isBuy ? 'BUY' : 'SELL'} on ${coin}!`);
+                        // this.showToast(`🐋 INITIATIVE: $${(value/1e6).toFixed(2)}M ${isBuy ? 'BUY' : 'SELL'} on ${coin}!`);
                     }
                 }
 
@@ -549,12 +571,13 @@ class WhaleFlowDashboard {
                             time: now, side: isBuy ? 'BUY' : 'SELL',
                             price, size: sameSide.reduce((s,t) => s + t.size, 0),
                             value: clusterVal, coin, mega_type: 'clustering',
-                            cluster_count: sameSide.length
+                            cluster_count: sameSide.length,
+                            exchange: trade.exchange || 'HL'
                         });
                         if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
                         if (coin === this.currentCoin) {
                             this.renderMegaWhales();
-                            this.showToast(`🦈 CLUSTER: ${sameSide.length} ${isBuy ? 'BUY' : 'SELL'} whales on ${coin}!`);
+                            // this.showToast(`🦈 CLUSTER: ${sameSide.length} ${isBuy ? 'BUY' : 'SELL'} whales on ${coin}!`);
                         }
                     }
                 }
@@ -564,8 +587,15 @@ class WhaleFlowDashboard {
         if (currentCoinUpdated) {
             this.loadCoinData(this.currentCoin);
             this.updateSummaryCards();
-            this.renderTradesList();
             this.updateAnalytics();
+            
+            if (!this._renderTradesPending) {
+                this._renderTradesPending = true;
+                requestAnimationFrame(() => {
+                    this.renderTradesList();
+                    this._renderTradesPending = false;
+                });
+            }
         }
     }
 
@@ -585,8 +615,15 @@ class WhaleFlowDashboard {
         }));
 
         this.orderbook = { bids, asks };
-        this.renderOrderbook();
-        this.updateAnalytics();
+        
+        if (!this._renderObPending) {
+            this._renderObPending = true;
+            requestAnimationFrame(() => {
+                this.renderOrderbook();
+                this.updateAnalytics();
+                this._renderObPending = false;
+            });
+        }
     }
 
     // ==================== FUNDING DATA ====================
@@ -632,79 +669,7 @@ class WhaleFlowDashboard {
                 this.updateMarketDataUI();
             }
 
-            // ——— Funding Flip detection for each coin ———
-            const now = Date.now();
-            this.coinList.forEach(coin => {
-                const meta = this.allCoinMeta.get(coin);
-                if (!meta) return;
-                const d = this.getCoinData(coin);
-                const fs = d.flipState;
-                const funding = meta.funding;
-                const ratePct = funding * 100;
-                const currentSign = funding >= 0 ? 'positive' : 'negative';
 
-                // Initialize on first poll
-                if (fs.lastSign === null) {
-                    fs.lastSign = currentSign;
-                    fs.lastSignTime = now;
-                    fs.lastFundingValue = ratePct;
-                    return;
-                }
-
-                // Detect flip: sign changed AND previous was above noise threshold
-                if (currentSign !== fs.lastSign && Math.abs(fs.lastFundingValue) >= 0.005) {
-                    const acked = JSON.parse(localStorage.getItem('acked_flips') || '[]');
-                    fs.flipHistory.push({
-                        time: now,
-                        from: fs.lastSign,
-                        to: currentSign,
-                        fromRate: fs.lastFundingValue,
-                        toRate: ratePct,
-                    });
-                    // Keep last 20 flips
-                    if (fs.flipHistory.length > 20) fs.flipHistory = fs.flipHistory.slice(-20);
-
-                    // Reset chaos resolution since we just flipped again
-                    fs.chaosResolved = false;
-                    fs.chaosResolvedSide = null;
-                    fs.chaosResolvedTime = 0;
-
-                    // Set signal (only if not already acknowledged)
-                    if (!acked.includes(now)) {
-                        d.signals.funding_flip = {
-                            active: true,
-                            side: currentSign === 'negative' ? 'bullish' : 'bearish',
-                            detail: `Flipped ${fs.lastSign} → ${currentSign} (${fs.lastFundingValue.toFixed(4)}% → ${ratePct.toFixed(4)}%)`,
-                            time: now,
-                            acknowledged: false,
-                        };
-                        if (coin === this.currentCoin) {
-                            this.showToast(`🔄 FUNDING FLIP on ${coin}: ${fs.lastSign} → ${currentSign}`);
-                        }
-                    }
-
-                    fs.lastSign = currentSign;
-                    fs.lastSignTime = now;
-                } else if (currentSign === fs.lastSign) {
-                    // Check for chaos resolution: same sign for 2 hours
-                    // Use total flip history (not just last hour — flips age out of 1h window before 2h stability is reached)
-                    if (fs.flipHistory.length > 0 && !fs.chaosResolved && now - fs.lastSignTime >= 7200000) {
-                        fs.chaosResolved = true;
-                        // Positive funding = bulls in control, Negative = bears in control
-                        fs.chaosResolvedSide = currentSign === 'positive' ? 'bullish' : 'bearish';
-                        fs.chaosResolvedTime = now;
-                        fs.chaosActive = false;
-                        if (coin === this.currentCoin) {
-                            this.showToast(`✅ Funding chaos ended on ${coin} — ${fs.chaosResolvedSide.toUpperCase()} side chosen`);
-                        }
-                    }
-                }
-
-                // Chaos stays active as long as there are flips and no resolution
-                fs.chaosActive = fs.flipHistory.length > 0 && !fs.chaosResolved;
-
-                fs.lastFundingValue = ratePct;
-            });
 
             // ——— Market Regime evaluation for each coin ———
             this.coinList.forEach(coin => {
@@ -1032,7 +997,7 @@ class WhaleFlowDashboard {
             banner.className = 'abs-status-banner';
             icon.textContent = '✅';
             label.textContent = 'No Absorption';
-            sub.textContent = `${abs.conditionsMet}/4 conditions met — absorption fires only when all 4 align`;
+            sub.textContent = `absorption fires when OI, Volume against Flow and Flow Imbalance align`;
         }
 
         // ---- Evidence Panel (only when detected) ----
@@ -1158,7 +1123,7 @@ class WhaleFlowDashboard {
                 if (abs.snapshots.length < 2) {
                     exp.innerHTML = `Accumulating data — snapshots are taken every 5 minutes. Need at least 2 snapshots (10 min) before evaluation begins. Currently have ${abs.snapshots.length} snapshot(s).`;
                 } else {
-                    exp.innerHTML = `${abs.conditionsMet}/4 conditions met. Absorption detection requires: <strong>(1)</strong> flow imbalance &gt;60%, <strong>(2)</strong> price moving against that flow (reversal), <strong>(3)</strong> OI increasing, and <strong>(4)</strong> funding confirming crowd bias. All must align simultaneously.`;
+                    exp.innerHTML = `Absorption detection requires: <strong>(1)</strong> flow imbalance &gt;60%, <strong>(2)</strong> price moving against that flow (reversal), <strong>(3)</strong> OI increasing, and <strong>(4)</strong> funding confirming crowd bias.`;
                 }
             }
         }
@@ -1362,12 +1327,14 @@ class WhaleFlowDashboard {
             const isBuy = trade.side === 'BUY';
             const isMega = trade.value >= this.whaleThreshold * 5;
             const timeStr = this.formatTime(trade.time);
+            const exch = trade.exchange || 'HL';
 
-            return `<div class="trade-row ${isBuy ? 'buy-trade' : 'sell-trade'}${isMega ? ' mega-whale' : ''}" ${i === 0 ? 'style="animation: tradeSlideIn 0.4s ease"' : ''}>
+            return `<div class="trade-row ${isBuy ? 'buy-trade' : 'sell-trade'}${isMega ? ' mega-whale' : ''}">
                 <span class="trade-time">${timeStr}</span>
                 <span class="trade-side">${trade.side}</span>
                 <span class="trade-price">${this.formatPrice(trade.price)}</span>
                 <span class="trade-size">${this.formatSize(trade.size)}</span>
+                <span class="trade-exch">[${exch}]</span>
                 <span class="trade-value">$${this.formatCompact(trade.value)}</span>
             </div>`;
         }).join('');
@@ -1405,25 +1372,70 @@ class WhaleFlowDashboard {
             this.elements.obBuyFill.style.width = '50%';
             this.elements.obSellFill.style.width = '50%';
         }
+        
+        let displayBuyVol = this.totalBuyVolume;
+        let displaySellVol = this.totalSellVolume;
+        let displayBuyCount = this.buyCount;
+        let displaySellCount = this.sellCount;
 
-        this.elements.tradeBuyVol.textContent = '$' + this.formatCompact(this.totalBuyVolume);
-        this.elements.tradeSellVol.textContent = '$' + this.formatCompact(this.totalSellVolume);
+        if (this.whaleVolumeTimeframe !== 'Live') {
+            displayBuyVol = 0;
+            displaySellVol = 0;
+            displayBuyCount = 0;
+            displaySellCount = 0;
+            const tfHours = this.whaleVolumeTimeframe === '1h' ? 1 : (this.whaleVolumeTimeframe === '4h' ? 4 : 24);
+            const cutoff = Date.now() - (tfHours * 60 * 60 * 1000);
+            
+            const d = this.getCoinData(this.currentCoin);
+            if (d && d.whaleBuckets) {
+                d.whaleBuckets.forEach(b => {
+                    if (b.time >= cutoff) {
+                        displayBuyVol += b.buy;
+                        displaySellVol += b.sell;
+                        displayBuyCount += (b.buy_count || 0);
+                        displaySellCount += (b.sell_count || 0);
+                    }
+                });
+            }
+        }
 
-        const tradeTotal = this.totalBuyVolume + this.totalSellVolume;
+        this.elements.tradeBuyVol.textContent = '$' + this.formatCompact(displayBuyVol);
+        this.elements.tradeSellVol.textContent = '$' + this.formatCompact(displaySellVol);
+
+        const tradeTotal = displayBuyVol + displaySellVol;
         if (tradeTotal > 0) {
-            this.elements.tradeBuyFill.style.width = ((this.totalBuyVolume / tradeTotal) * 100) + '%';
-            this.elements.tradeSellFill.style.width = ((this.totalSellVolume / tradeTotal) * 100) + '%';
+            this.elements.tradeBuyFill.style.width = ((displayBuyVol / tradeTotal) * 100) + '%';
+            this.elements.tradeSellFill.style.width = ((displaySellVol / tradeTotal) * 100) + '%';
         } else {
             this.elements.tradeBuyFill.style.width = '50%';
             this.elements.tradeSellFill.style.width = '50%';
         }
-
-        this.elements.imbalanceRatio.textContent = this.buyCount > 0 || this.sellCount > 0
-            ? `Buy:Sell ${this.buyCount}:${this.sellCount}` : 'Buy:Sell 0:0';
+        this.elements.imbalanceRatio.textContent = displayBuyCount > 0 || displaySellCount > 0
+            ? `Buy:Sell ${displayBuyCount}:${displaySellCount}` : 'Buy:Sell 0:0';
     }
 
     updateCVD() {
-        const delta = this.totalBuyVolume - this.totalSellVolume;
+        let cvdBuy = this.totalBuyVolume;
+        let cvdSell = this.totalSellVolume;
+
+        if (this.whaleVolumeTimeframe !== 'Live') {
+            cvdBuy = 0;
+            cvdSell = 0;
+            const tfHours = this.whaleVolumeTimeframe === '1h' ? 1 : (this.whaleVolumeTimeframe === '4h' ? 4 : 24);
+            const cutoff = Date.now() - (tfHours * 60 * 60 * 1000);
+            
+            const d = this.getCoinData(this.currentCoin);
+            if (d && d.whaleBuckets) {
+                d.whaleBuckets.forEach(b => {
+                    if (b.time >= cutoff) {
+                        cvdBuy += b.buy;
+                        cvdSell += b.sell;
+                    }
+                });
+            }
+        }
+
+        const delta = cvdBuy - cvdSell;
         const cvdEl = this.elements.cvdValue;
         const fillEl = this.elements.cvdFill;
 
@@ -1431,7 +1443,7 @@ class WhaleFlowDashboard {
         cvdEl.textContent = sign + '$' + this.formatCompact(Math.abs(delta));
         cvdEl.className = 'cvd-value ' + (delta >= 0 ? 'positive' : 'negative');
 
-        const total = this.totalBuyVolume + this.totalSellVolume;
+        const total = cvdBuy + cvdSell;
         if (total > 0) {
             const pct = Math.min(Math.abs(delta) / total * 100, 50);
             fillEl.style.width = pct + '%';
@@ -1508,7 +1520,7 @@ class WhaleFlowDashboard {
     startClock() {
         const update = () => {
             this.elements.liveClock.textContent = new Date().toLocaleTimeString('en-US', {
-                hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+                hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit'
             });
         };
         update();
@@ -1544,7 +1556,7 @@ class WhaleFlowDashboard {
 
     formatTime(timestamp) {
         return new Date(timestamp).toLocaleTimeString('en-US', {
-            hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+            hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit'
         });
     }
 
@@ -1577,6 +1589,11 @@ class WhaleFlowDashboard {
                     buys: serverCoin.total_buy_vol,
                     sells: serverCoin.total_sell_vol
                 };
+            }
+            
+            // Whale timeframe buckets
+            if (serverCoin.whale_buckets && serverCoin.whale_buckets.length > 0) {
+                d.whaleBuckets = serverCoin.whale_buckets;
             }
 
             // Pressure history
@@ -1628,7 +1645,7 @@ class WhaleFlowDashboard {
             // Reversal Radar signals — convert signal times from backend seconds → ms
             if (serverCoin.signals) {
                 d.signals = serverCoin.signals;
-                ['initiative', 'clustering', 'funding_flip'].forEach(key => {
+                ['initiative', 'clustering'].forEach(key => {
                     if (d.signals[key] && d.signals[key].time) {
                         d.signals[key].time = d.signals[key].time * 1000;
                     }
@@ -1643,26 +1660,7 @@ class WhaleFlowDashboard {
             if (serverCoin.volume_buckets) {
                 d.volumeBuckets = serverCoin.volume_buckets;
             }
-            // Flip state — converts backend epoch-seconds to ms
-            if (serverCoin.flip_state) {
-                const fs = serverCoin.flip_state;
-                d.flipState = {
-                    currentSign:        fs.current_sign        || null,
-                    lastSign:           fs.last_sign           || null,
-                    lastSignTime:       (fs.last_sign_time     || 0) * 1000,
-                    lastFundingValue:   fs.last_funding_value  || 0,
-                    flipHistory:        (fs.flip_history       || []).map(f => ({
-                        from: f.from, to: f.to,
-                        time: (f.time || 0) * 1000,
-                        fromRate: f.from_rate || 0,
-                        toRate: f.to_rate || 0,
-                    })),
-                    chaosActive:        fs.chaos_active        || false,
-                    chaosResolved:      fs.chaos_resolved      || false,
-                    chaosResolvedSide:  fs.chaos_resolved_side || null,
-                    chaosResolvedTime: (fs.chaos_resolved_time || 0) * 1000,
-                };
-            }
+
 
             // Market Regime — eliminates warmup on refresh
             if (serverCoin.regime) {
@@ -1809,7 +1807,7 @@ class WhaleFlowDashboard {
         }
 
         // Count active
-        const activeList = [sigs.absorption, sigs.cvd_divergence, sigs.oi_divergence, sigs.volume_climax, sigs.funding_extreme, sigs.funding_flip, sigs.initiative, sigs.clustering];
+        const activeList = [sigs.absorption, sigs.cvd_divergence, sigs.oi_divergence, sigs.volume_climax, sigs.funding_extreme];
         const activeCount = activeList.filter(s => s.active).length;
         d.alertLevel = Math.min(activeCount, 4);
         if (activeCount === 0) d.alertLabel = 'Quiet';
@@ -1851,12 +1849,12 @@ class WhaleFlowDashboard {
         if (this.elements.alertLevelIcon) this.elements.alertLevelIcon.textContent = icons[lvl];
         if (this.elements.alertLevelText) this.elements.alertLevelText.textContent = labels[lvl];
 
-        const activeCount = [sigs.absorption, sigs.cvd_divergence, sigs.oi_divergence, sigs.volume_climax, sigs.funding_extreme, sigs.funding_flip, sigs.initiative, sigs.clustering].filter(s => s.active).length;
-        if (this.elements.radarAlertSub) this.elements.radarAlertSub.textContent = `${activeCount} / 8 signals active — ${subs[lvl]}`;
+        const activeCount = [sigs.absorption, sigs.cvd_divergence, sigs.oi_divergence, sigs.volume_climax, sigs.funding_extreme].filter(s => s.active).length;
+        if (this.elements.radarAlertSub) this.elements.radarAlertSub.textContent = `${activeCount} / 5 signals active — ${subs[lvl]}`;
 
         const fill = this.elements.radarAlertFill;
         if (fill) {
-            fill.style.width = `${(activeCount / 8) * 100}%`;
+            fill.style.width = `${(activeCount / 5) * 100}%`;
             fill.className = 'radar-alert-fill';
             if (lvl >= 4) fill.classList.add('level-3');
             else if (lvl >= 2) fill.classList.add('level-2');
@@ -1864,7 +1862,7 @@ class WhaleFlowDashboard {
         }
 
         if (this.elements.radarAlertBadge) {
-            this.elements.radarAlertBadge.textContent = `${icons[lvl]} ${label} (${activeCount}/8)`;
+            this.elements.radarAlertBadge.textContent = `${icons[lvl]} ${label} (${activeCount}/5)`;
         }
 
         // Update each signal row
@@ -1874,7 +1872,6 @@ class WhaleFlowDashboard {
             { key: 'oi_divergence', row: 'sigOI', dot: 'sigOIDot', detail: 'sigOIDetail' },
             { key: 'volume_climax', row: 'sigClimax', dot: 'sigClimaxDot', detail: 'sigClimaxDetail' },
             { key: 'funding_extreme', row: 'sigFunding', dot: 'sigFundingDot', detail: 'sigFundingDetail' },
-            { key: 'funding_flip', row: 'sigFlip', dot: 'sigFlipDot', detail: 'sigFlipDetail' },
             { key: 'initiative', row: 'sigInitiative', dot: 'sigInitiativeDot', detail: 'sigInitiativeDetail' },
             { key: 'clustering', row: 'sigClustering', dot: 'sigClusteringDot', detail: 'sigClusteringDetail' },
         ];
@@ -1908,44 +1905,6 @@ class WhaleFlowDashboard {
             }
         });
 
-        // Acknowledge button visibility
-        if (this.elements.sigFlipAck) {
-            this.elements.sigFlipAck.style.display = sigs.funding_flip.active ? 'inline-block' : 'none';
-        }
-
-        // Chaos counter bar — stays visible once triggered, until acknowledged
-        const fs = d.flipState;
-        const chaosBar = this.elements.flipChaosBar;
-        const chaosAckBtn = this.elements.chaosAck;
-        if (chaosBar) {
-            const now = Date.now();
-            const flipsInHour = fs.flipHistory.filter(f => now - f.time < 3600000).length;
-            const totalFlips = fs.flipHistory.length;
-
-            if (fs.chaosResolved) {
-                // Resolution: show with ack button
-                chaosBar.style.display = 'flex';
-                chaosBar.className = 'flip-chaos-bar resolved';
-                this.elements.flipChaosText.textContent = `Chaos ended — ${fs.chaosResolvedSide} side chosen (stable 2h+)`;
-                this.elements.flipChaosLevel.textContent = '✅ Resolved';
-                this.elements.flipChaosLevel.className = 'chaos-level resolved';
-                chaosBar.querySelector('.chaos-icon').textContent = '✅';
-                if (chaosAckBtn) chaosAckBtn.style.display = 'inline-block';
-            } else if (totalFlips > 0) {
-                // Active chaos — stays visible continuously
-                chaosBar.style.display = 'flex';
-                chaosBar.className = 'flip-chaos-bar';
-                this.elements.flipChaosText.textContent = `${flipsInHour} flips in 1h (${totalFlips} total) — ${flipsInHour >= 4 ? 'Major move imminent' : flipsInHour >= 2 ? 'High indecision' : 'Shift detected'}`;
-                const lvlClass = flipsInHour >= 4 ? 'extreme' : 'indecision';
-                this.elements.flipChaosLevel.textContent = flipsInHour >= 4 ? '💥 Extreme' : '⚡ Indecision';
-                this.elements.flipChaosLevel.className = `chaos-level ${lvlClass}`;
-                chaosBar.querySelector('.chaos-icon').textContent = '⚡';
-                if (chaosAckBtn) chaosAckBtn.style.display = 'none';
-            } else {
-                chaosBar.style.display = 'none';
-                if (chaosAckBtn) chaosAckBtn.style.display = 'none';
-            }
-        }
     }
 
     // ==================== MARKET REGIME RENDERER ====================
