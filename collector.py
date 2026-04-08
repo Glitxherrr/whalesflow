@@ -32,7 +32,14 @@ class HyperliquidCollector:
 
     def __init__(self):
         self.coins = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP']
-        self.whale_threshold = 50000
+        # Coin-specific minimum thresholds for standard whales
+        self.whale_thresholds = {
+            'BTC': 50000,
+            'ETH': 10000,
+            'SOL': 100,
+            'PAXG': 10,
+            'XRP': 50
+        }
 
         # Coin-specific mega thresholds for Aggressive Initiative
         self.mega_thresholds = {
@@ -413,7 +420,8 @@ class HyperliquidCollector:
                     d['current_bucket_sell'] += value
 
                 # Whale tracking
-                if value >= self.whale_threshold:
+                coin_threshold = self.whale_thresholds.get(coin, 50000)
+                if value >= coin_threshold:
                     # Timeframe Bucketing (1-minute resolution)
                     # Use server time if trade_time is missing or wildly wrong
                     minute_ts = (trade_time // 60000) * 60000
