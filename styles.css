@@ -664,8 +664,8 @@ body {
     color: var(--accent-1);
 }
 
-.dominance-value.bulls { color: var(--buy-primary) !important; }
-.dominance-value.bears { color: var(--sell-primary) !important; }
+.dominance-value.bulls { color: #00e68a !important; }
+.dominance-value.bears { color: #ff4757 !important; }
 
 .dominance-label {
     font-size: 0.6rem;
@@ -1699,9 +1699,9 @@ body {
     transition: color 0.3s;
 }
 
-.signal-dot.active { color: var(--buy-primary); }
-.signal-dot.active.bullish { color: var(--buy-primary) !important; }
-.signal-dot.active.bearish { color: var(--sell-primary) !important; }
+.signal-dot.active { color: #00e68a; }
+.signal-dot.active.bullish { color: #00e68a !important; }
+.signal-dot.active.bearish { color: #ff4757 !important; }
 
 .signal-icon { font-size: 0.85rem; }
 
@@ -1723,8 +1723,8 @@ body {
     white-space: nowrap;
 }
 
-.signal-detail.bullish { color: var(--buy-primary) !important; }
-.signal-detail.bearish { color: var(--sell-primary) !important; }
+.signal-detail.bullish { color: #00e68a !important; }
+.signal-detail.bearish { color: #ff4757 !important; }
 
 /* Acknowledge Button */
 .ack-btn {
@@ -1846,8 +1846,8 @@ body {
     font-weight: 700;
     font-size: 0.8rem;
 }
-.mega-value.bulls { color: var(--buy-primary) !important; }
-.mega-value.bears { color: var(--sell-primary) !important; }
+.mega-value.bulls { color: #00e68a !important; }
+.mega-value.bears { color: #ff4757 !important; }
 
 .mega-whale-entry .mega-type-badge {
     display: inline-block;
