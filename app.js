@@ -1493,21 +1493,42 @@ class WhaleFlowDashboard {
 
         rateEl.textContent = (rate * 100).toFixed(4) + '%';
 
-        let badgeClass, badgeText;
+        let badgeClass, badgeText, currentState;
         if (rate > 0.000005) {
             badgeClass = 'positive';
             badgeText = '⬆ Positive (Longs Pay)';
             rateEl.style.color = 'var(--buy-primary)';
+            currentState = 'positive';
         } else if (rate < -0.000005) {
             badgeClass = 'negative';
             badgeText = '⬇ Negative (Shorts Pay)';
             rateEl.style.color = 'var(--sell-primary)';
+            currentState = 'negative';
         } else {
             badgeClass = 'neutral';
             badgeText = '⬌ Neutral';
             rateEl.style.color = 'var(--accent-1)';
+            currentState = 'neutral';
         }
 
+        const coin = this.currentCoin;
+        const d = this.getCoinData(coin);
+        if (d.prevFundingState !== undefined && d.prevFundingState !== currentState) {
+            if (currentState === 'positive' && this._canNotify(`${coin}_funding_flip_pos`, 90000)) {
+                this.sendAlert(`💰 Funding Flipped Positive (+5) on ${coin}`, {
+                    desktopTitle: `💰 Funding Flip — ${coin}`,
+                    desktopBody: `Funding rate turned positive (${(rate*100).toFixed(4)}%). Longs are now paying shorts.`
+                });
+            } else if (currentState === 'negative' && this._canNotify(`${coin}_funding_flip_neg`, 90000)) {
+                this.sendAlert(`💰 Funding Flipped Negative (-5) on ${coin}`, {
+                    desktopTitle: `💰 Funding Flip — ${coin}`,
+                    desktopBody: `Funding rate turned negative (${(rate*100).toFixed(4)}%). Shorts are now paying longs.`
+                });
+            }
+        }
+        d.prevFundingState = currentState;
+
+        this.elements.fundingCard.className = `stat-card funding-card ${badgeClass}`;
         direction.innerHTML = `<span class="direction-badge ${badgeClass}">${badgeText}</span>`;
     }
 
