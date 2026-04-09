@@ -1525,16 +1525,16 @@ class WhaleFlowDashboard {
             badge.className = 'winning-badge bulls';
             arrow.textContent = '⬆'; label.textContent = 'BULLS';
             domPct.textContent = buyPct.toFixed(1) + '%';
-            domPct.style.color = 'var(--buy-primary)';
+            domPct.className = 'dominance-value bulls';
         } else if (v.sellVol > v.buyVol) {
             badge.className = 'winning-badge bears';
             arrow.textContent = '⬇'; label.textContent = 'BEARS';
             domPct.textContent = (100 - buyPct).toFixed(1) + '%';
-            domPct.style.color = 'var(--sell-primary)';
+            domPct.className = 'dominance-value bears';
         } else {
             badge.className = 'winning-badge';
             arrow.textContent = '⬌'; label.textContent = 'Even'; domPct.textContent = '50%';
-            domPct.style.color = 'var(--accent-1)';
+            domPct.className = 'dominance-value';
         }
     }
 
@@ -2436,9 +2436,11 @@ class WhaleFlowDashboard {
             }
             if (detailEl) {
                 detailEl.textContent = sig.active ? sig.detail : '—';
-                detailEl.style.color = sig.active
-                    ? (sig.side === 'bearish' ? 'var(--sell-primary)' : 'var(--buy-primary)')
-                    : 'var(--text-secondary)';
+                detailEl.className = 'signal-detail';
+                if (sig.active) {
+                    if (sig.side === 'bearish') detailEl.classList.add('bearish');
+                    else if (sig.side === 'bullish') detailEl.classList.add('bullish');
+                }
             }
         });
 
@@ -2528,7 +2530,7 @@ class WhaleFlowDashboard {
                     <span class="mega-time">${timeStr}</span>
                     <span class="mega-side ${isBuy ? 'buy' : 'sell'}">${m.side}</span>
                     <span class="mega-info">${m.coin} @ $${m.price.toLocaleString()} ${typeBadge}</span>
-                    <span class="mega-value" style="color: ${isBuy ? 'var(--buy-primary)' : 'var(--sell-primary)'}">${valueStr}</span>
+                    <span class="mega-value ${isBuy ? 'bulls' : 'bears'}">${valueStr}</span>
                 </div>`;
         }).join('');
     }
