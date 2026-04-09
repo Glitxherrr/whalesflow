@@ -1058,8 +1058,8 @@ class HyperliquidCollector:
         asyncio.set_event_loop(self.local_loop)
         
         async def main():
-            async with websockets.serve(self._local_ws_handler, "127.0.0.1", 8765):
-                print("[Collector] Local WS Server running on ws://127.0.0.1:8765")
+            async with websockets.serve(self._local_ws_handler, "0.0.0.0", 8765):
+                print("[Collector] Local WS Server running on ws://0.0.0.0:8765")
                 await asyncio.Future()  # run forever
 
         try:

@@ -170,6 +170,42 @@ class WhaleFlowDashboard {
         this.lastPressureSnapshot = d.lastPressureSnapshot;
     }
 
+    _saveCurrentToStorage() {
+        try {
+            const dataToSave = {};
+            this.coinDataStore.forEach((d, coin) => {
+                dataToSave[coin] = {
+                    buyVol: d.currentBuyVolume || 0,
+                    sellVol: d.currentSellVolume || 0,
+                    buyCount: d.currentBuyCount || 0,
+                    sellCount: d.currentSellCount || 0,
+                    lastTime: d.lastTradeTime || this.currentModeClearTime
+                };
+            });
+            localStorage.setItem('whaleflow_curr_state', JSON.stringify(dataToSave));
+        } catch(e) {}
+    }
+
+    _loadCurrentFromStorage() {
+        try {
+            const raw = localStorage.getItem('whaleflow_curr_state');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                this.coinList.forEach(coin => {
+                    const saved = parsed[coin];
+                    if (saved) {
+                        const d = this.getCoinData(coin);
+                        d.currentBuyVolume = saved.buyVol || 0;
+                        d.currentSellVolume = saved.sellVol || 0;
+                        d.currentBuyCount = saved.buyCount || 0;
+                        d.currentSellCount = saved.sellCount || 0;
+                        d.lastTradeTime = saved.lastTime || 0;
+                    }
+                });
+            }
+        } catch(e) {}
+    }
+
     // ==================== DOM CACHING ====================
 
     cacheElements() {
@@ -305,18 +341,16 @@ class WhaleFlowDashboard {
                 this.currentModeClearTime = Date.now();
                 this._saveModeToStorage();
                 
-                // Tell the backend to clear its counters for Current Mode
-                if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
-                    this.localWs.send(JSON.stringify({ method: 'clear_current' }));
-                }
-
-                // Zero out accumulators for all coins
+                // Zero out accumulators for all coins natively in browser memory
                 this.coinDataStore.forEach(d => {
                     d.currentBuyVolume = 0;
                     d.currentSellVolume = 0;
                     d.currentBuyCount = 0;
                     d.currentSellCount = 0;
+                    d.lastTradeTime = this.currentModeClearTime;
                 });
+                this._saveCurrentToStorage();
+                
                 this.loadCoinData(this.currentCoin);
 
                 this.updateSummaryCards();
@@ -375,7 +409,8 @@ class WhaleFlowDashboard {
         }
 
         try {
-            this.localWs = new WebSocket('ws://127.0.0.1:8765');
+            const host = window.location.hostname || '127.0.0.1';
+            this.localWs = new WebSocket(`ws://${host}:8765`);
             this.localWs.onopen = () => {
                 console.log('Local backend connected successfully');
                 this.localWsActive = true;
@@ -754,6 +789,8 @@ class WhaleFlowDashboard {
                     if (trade.time >= this.currentModeClearTime) {
                         d.currentBuyVolume += value;
                         d.currentBuyCount++;
+                        d.lastTradeTime = Math.max(d.lastTradeTime || 0, trade.time);
+                        this._needsStorageSave = true;
                     }
                 } else {
                     d.totalSellVolume += value;
@@ -761,12 +798,23 @@ class WhaleFlowDashboard {
                     if (trade.time >= this.currentModeClearTime) {
                         d.currentSellVolume += value;
                         d.currentSellCount++;
+                        d.lastTradeTime = Math.max(d.lastTradeTime || 0, trade.time);
+                        this._needsStorageSave = true;
                     }
                 }
 
                 if (coin === this.currentCoin) {
                     currentCoinUpdated = true;
                 }
+
+        // Throttle saving current mode state to once per second
+        if (this._needsStorageSave && !this._saveTimeout) {
+            this._saveTimeout = setTimeout(() => {
+                this._saveCurrentToStorage();
+                this._saveTimeout = null;
+                this._needsStorageSave = false;
+            }, 1000);
+        }
 
                 // ——— Aggressive Initiative detection ———
                 const megaThresholds = { BTC: 2000000, ETH: 1000000, SOL: 500000, PAXG: 200000, XRP: 300000 };
@@ -2000,6 +2048,8 @@ class WhaleFlowDashboard {
 
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
+        this._loadCurrentFromStorage();
+
         this.coinList.forEach(coin => {
             const serverCoin = state.coins[coin];
             if (!serverCoin) return;
@@ -2008,18 +2058,35 @@ class WhaleFlowDashboard {
 
             // Whale trades — backend uses appendleft so index 0 = newest
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
-                // Keep up to 500 trades to ensure Current mode can fully reconstruct its volume on refresh
+                // Keep up to 500 trades to ensure Current mode can reconstruct its volume
                 d.whaleTrades = serverCoin.whale_trades.slice(0, 500);
                 d.totalBuyVolume = serverCoin.total_buy_vol;
                 d.totalSellVolume = serverCoin.total_sell_vol;
                 d.buyCount = serverCoin.buy_count;
                 d.sellCount = serverCoin.sell_count;
 
-                // Use the server's actively tracked "Current mode" counters natively!
-                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
-                d.currentSellVolume = serverCoin.current_sell_vol || 0;
-                d.currentBuyCount = serverCoin.current_buy_count || 0;
-                d.currentSellCount = serverCoin.current_sell_count || 0;
+                // Re-hydrate the current accumulation seamlessly without double-counting
+                if (this.currentModeClearTime > 0) {
+                    // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
+                    const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
+                    
+                    for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
+                        const t = d.whaleTrades[i];
+                        if (t.time > stitchTime) {
+                            if (t.side === 'BUY') {
+                                d.currentBuyVolume += t.value;
+                                d.currentBuyCount++;
+                            } else {
+                                d.currentSellVolume += t.value;
+                                d.currentSellCount++;
+                            }
+                        }
+                    }
+                    if (d.whaleTrades.length > 0) {
+                        d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
+                    }
+                }
+                this._saveCurrentToStorage();
 
                 d.lastPressureSnapshot = {
                     buys: serverCoin.total_buy_vol,
