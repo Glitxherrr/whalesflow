@@ -305,6 +305,11 @@ class WhaleFlowDashboard {
                 this.currentModeClearTime = Date.now();
                 this._saveModeToStorage();
                 
+                // Tell the backend to clear its counters for Current Mode
+                if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
+                    this.localWs.send(JSON.stringify({ method: 'clear_current' }));
+                }
+
                 // Zero out accumulators for all coins
                 this.coinDataStore.forEach(d => {
                     d.currentBuyVolume = 0;
@@ -2003,30 +2008,18 @@ class WhaleFlowDashboard {
 
             // Whale trades — backend uses appendleft so index 0 = newest
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
-                d.whaleTrades = serverCoin.whale_trades.slice(0, 200);
+                // Keep up to 500 trades to ensure Current mode can fully reconstruct its volume on refresh
+                d.whaleTrades = serverCoin.whale_trades.slice(0, 500);
                 d.totalBuyVolume = serverCoin.total_buy_vol;
                 d.totalSellVolume = serverCoin.total_sell_vol;
                 d.buyCount = serverCoin.buy_count;
                 d.sellCount = serverCoin.sell_count;
 
-                // Reconstruct Current mode counters from available server history
-                d.currentBuyVolume = 0;
-                d.currentSellVolume = 0;
-                d.currentBuyCount = 0;
-                d.currentSellCount = 0;
-                if (this.currentModeClearTime > 0) {
-                    d.whaleTrades.forEach(t => {
-                        if (t.time >= this.currentModeClearTime) {
-                            if (t.side === 'BUY') {
-                                d.currentBuyVolume += t.value;
-                                d.currentBuyCount++;
-                            } else {
-                                d.currentSellVolume += t.value;
-                                d.currentSellCount++;
-                            }
-                        }
-                    });
-                }
+                // Use the server's actively tracked "Current mode" counters natively!
+                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
+                d.currentSellVolume = serverCoin.current_sell_vol || 0;
+                d.currentBuyCount = serverCoin.current_buy_count || 0;
+                d.currentSellCount = serverCoin.current_sell_count || 0;
 
                 d.lastPressureSnapshot = {
                     buys: serverCoin.total_buy_vol,

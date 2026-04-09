@@ -67,6 +67,10 @@ class HyperliquidCollector:
             'total_sell_vol': 0.0,
             'buy_count': 0,
             'sell_count': 0,
+            'current_buy_vol': 0.0,
+            'current_sell_vol': 0.0,
+            'current_buy_count': 0,
+            'current_sell_count': 0,
             'whale_buckets': deque(maxlen=1440), # up to 24h of 1-minute buckets
 
 
@@ -473,9 +477,13 @@ class HyperliquidCollector:
                     if is_buy:
                         d['total_buy_vol'] += value
                         d['buy_count'] += 1
+                        d['current_buy_vol'] += value
+                        d['current_buy_count'] += 1
                     else:
                         d['total_sell_vol'] += value
                         d['sell_count'] += 1
+                        d['current_sell_vol'] += value
+                        d['current_sell_count'] += 1
 
                     # Check Whale Clustering
                     self._check_clustering(coin)
@@ -1013,6 +1021,10 @@ class HyperliquidCollector:
                     'total_sell_vol': d['total_sell_vol'],
                     'buy_count': d['buy_count'],
                     'sell_count': d['sell_count'],
+                    'current_buy_vol': d['current_buy_vol'],
+                    'current_sell_vol': d['current_sell_vol'],
+                    'current_buy_count': d['current_buy_count'],
+                    'current_sell_count': d['current_sell_count'],
                     'funding': d['funding'],
                     'mark_px': d['mark_px'],
                     'oracle_px': d['oracle_px'],
@@ -1064,6 +1076,13 @@ class HyperliquidCollector:
                     data = json.loads(message)
                     if data.get('method') == 'ping':
                         await websocket.send(json.dumps({'channel': 'pong'}))
+                    elif data.get('method') == 'clear_current':
+                        with self._data_lock:
+                            for c in self.coins:
+                                self.data[c]['current_buy_vol'] = 0.0
+                                self.data[c]['current_sell_vol'] = 0.0
+                                self.data[c]['current_buy_count'] = 0
+                                self.data[c]['current_sell_count'] = 0
                 except:
                     pass
         finally:
