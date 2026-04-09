@@ -88,6 +88,10 @@ class WhaleFlowDashboard {
             totalSellVolume: 0,
             buyCount: 0,
             sellCount: 0,
+            currentBuyVolume: 0,
+            currentSellVolume: 0,
+            currentBuyCount: 0,
+            currentSellCount: 0,
             whaleBuckets: [],
             pressureHistory: [],
             lastPressureSnapshot: { buys: 0, sells: 0 },
@@ -158,6 +162,10 @@ class WhaleFlowDashboard {
         this.totalSellVolume = d.totalSellVolume;
         this.buyCount = d.buyCount;
         this.sellCount = d.sellCount;
+        this.currentBuyVolume = d.currentBuyVolume || 0;
+        this.currentSellVolume = d.currentSellVolume || 0;
+        this.currentBuyCount = d.currentBuyCount || 0;
+        this.currentSellCount = d.currentSellCount || 0;
         this.pressureHistory = d.pressureHistory;
         this.lastPressureSnapshot = d.lastPressureSnapshot;
     }
@@ -296,6 +304,16 @@ class WhaleFlowDashboard {
             this.elements.clearDataBtn.addEventListener('click', () => {
                 this.currentModeClearTime = Date.now();
                 this._saveModeToStorage();
+                
+                // Zero out accumulators for all coins
+                this.coinDataStore.forEach(d => {
+                    d.currentBuyVolume = 0;
+                    d.currentSellVolume = 0;
+                    d.currentBuyCount = 0;
+                    d.currentSellCount = 0;
+                });
+                this.loadCoinData(this.currentCoin);
+
                 this.updateSummaryCards();
                 this.renderTradesList();
                 this.updateAnalytics();
@@ -728,9 +746,17 @@ class WhaleFlowDashboard {
                 if (isBuy) {
                     d.totalBuyVolume += value;
                     d.buyCount++;
+                    if (trade.time >= this.currentModeClearTime) {
+                        d.currentBuyVolume += value;
+                        d.currentBuyCount++;
+                    }
                 } else {
                     d.totalSellVolume += value;
                     d.sellCount++;
+                    if (trade.time >= this.currentModeClearTime) {
+                        d.currentSellVolume += value;
+                        d.currentSellCount++;
+                    }
                 }
 
                 if (coin === this.currentCoin) {
@@ -1801,14 +1827,13 @@ class WhaleFlowDashboard {
                 sellCount: this.sellCount
             };
         }
-        // Current mode: recalculate from filtered trades
-        const trades = this.getDisplayTrades();
-        let buyVol = 0, sellVol = 0, buyCount = 0, sellCount = 0;
-        trades.forEach(t => {
-            if (t.side === 'BUY') { buyVol += t.value; buyCount++; }
-            else { sellVol += t.value; sellCount++; }
-        });
-        return { buyVol, sellVol, buyCount, sellCount };
+        // Current mode: return tracked accumulators instead of recalculating from array (which drops old trades)
+        return {
+            buyVol: this.currentBuyVolume || 0,
+            sellVol: this.currentSellVolume || 0,
+            buyCount: this.currentBuyCount || 0,
+            sellCount: this.currentSellCount || 0
+        };
     }
 
     // ==================== NOTIFICATIONS ====================
@@ -1962,6 +1987,26 @@ class WhaleFlowDashboard {
                 d.totalSellVolume = serverCoin.total_sell_vol;
                 d.buyCount = serverCoin.buy_count;
                 d.sellCount = serverCoin.sell_count;
+
+                // Reconstruct Current mode counters from available server history
+                d.currentBuyVolume = 0;
+                d.currentSellVolume = 0;
+                d.currentBuyCount = 0;
+                d.currentSellCount = 0;
+                if (this.currentModeClearTime > 0) {
+                    d.whaleTrades.forEach(t => {
+                        if (t.time >= this.currentModeClearTime) {
+                            if (t.side === 'BUY') {
+                                d.currentBuyVolume += t.value;
+                                d.currentBuyCount++;
+                            } else {
+                                d.currentSellVolume += t.value;
+                                d.currentSellCount++;
+                            }
+                        }
+                    });
+                }
+
                 d.lastPressureSnapshot = {
                     buys: serverCoin.total_buy_vol,
                     sells: serverCoin.total_sell_vol
