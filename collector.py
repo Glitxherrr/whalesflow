@@ -505,20 +505,24 @@ class HyperliquidCollector:
         if cluster_side:
             total_val = sum(t['value'] for t in cluster_trades)
             count = len(cluster_trades)
+            side_str = 'BUY' if cluster_side == 'bullish' else 'SELL'
             d['signals']['clustering'] = {
                 'active': True, 'side': cluster_side,
-                'detail': f"{count} {'BUY' if cluster_side == 'bullish' else 'SELL'} trades (${total_val/1e6:.2f}M) in 60s",
+                'detail': f"{count} {side_str} trades (${total_val/1e6:.2f}M) in 60s",
                 'time': time.time(),
             }
-            d['mega_whales'].appendleft({
-                'time': int(time.time() * 1000),
-                'side': 'BUY' if cluster_side == 'bullish' else 'SELL',
-                'price': cluster_trades[0]['price'],
-                'size': sum(t['size'] for t in cluster_trades),
-                'value': total_val, 'coin': coin,
-                'mega_type': 'clustering', 'cluster_count': count,
-                'exchange': 'MIX'
-            })
+            # Avoid duplicate mega entries for same cluster burst
+            last_mega = d['mega_whales'][0] if d['mega_whales'] else None
+            if not last_mega or last_mega.get('mega_type') != 'clustering' or (time.time() * 1000 - last_mega.get('time', 0)) > 60000:
+                d['mega_whales'].appendleft({
+                    'time': int(time.time() * 1000),
+                    'side': side_str,
+                    'price': cluster_trades[0]['price'],
+                    'size': sum(t['size'] for t in cluster_trades),
+                    'value': total_val, 'coin': coin,
+                    'mega_type': 'clustering', 'cluster_count': count,
+                    'exchange': 'MIX'
+                })
 
     # ==================== FUNDING / OI POLLER ====================
 
@@ -1068,9 +1072,14 @@ class HyperliquidCollector:
     async def _broadcast_local(self, msg_str):
         if not self.local_clients:
             return
-        # Broadcast concurrently
-        # websockets < 11.0: can't easily wait concurrently without gather
-        await asyncio.gather(
+        # Broadcast concurrently, remove stale clients
+        stale = set()
+        results = await asyncio.gather(
             *(client.send(msg_str) for client in self.local_clients),
             return_exceptions=True
         )
+        for client, result in zip(list(self.local_clients), results):
+            if isinstance(result, Exception):
+                stale.add(client)
+        if stale:
+            self.local_clients -= stale

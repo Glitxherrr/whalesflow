@@ -9,7 +9,7 @@
 
     --text-primary: #e8e8f5;
     --text-secondary: #8888aa;
-    --text-tertiary: #5555777;
+    --text-tertiary: #555577;
 
     --buy-primary: #00e68a;
     --buy-secondary: #00ff9d;
@@ -328,6 +328,59 @@ body {
     text-align: right;
 }
 
+/* Notification Toggle */
+.notification-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    font-size: 0.8rem;
+    user-select: none;
+}
+
+.notification-toggle:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--border-glow);
+}
+
+.notification-toggle.active {
+    background: rgba(102, 126, 234, 0.15);
+    border-color: rgba(102, 126, 234, 0.35);
+}
+
+.notif-icon {
+    font-size: 1rem;
+    transition: transform 0.3s ease;
+}
+
+.notification-toggle.active .notif-icon {
+    animation: bellRing 0.5s ease;
+}
+
+@keyframes bellRing {
+    0%, 100% { transform: rotate(0deg); }
+    25% { transform: rotate(15deg); }
+    50% { transform: rotate(-15deg); }
+    75% { transform: rotate(8deg); }
+}
+
+.notif-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.notification-toggle.active .notif-label {
+    color: var(--accent-1);
+}
+
 /* ===== Timeframe Bar ===== */
 .timeframe-bar {
     position: relative;
@@ -391,6 +444,27 @@ body {
     font-size: 0.7rem;
     color: var(--text-tertiary);
     white-space: nowrap;
+}
+
+.tf-clear-btn {
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    background: rgba(255, 71, 87, 0.1);
+    color: var(--sell-primary);
+    border: 1px solid rgba(255, 71, 87, 0.3);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    font-family: 'Inter', sans-serif;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+}
+
+.tf-clear-btn:hover {
+    background: rgba(255, 71, 87, 0.2);
+    border-color: rgba(255, 71, 87, 0.5);
+    box-shadow: 0 0 12px rgba(255, 71, 87, 0.2);
 }
 
 @media (max-width: 768px) {
