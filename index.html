@@ -42,6 +42,10 @@
                     <input type="number" id="whaleThreshold" value="50000" min="1000" step="5000">
                 </div>
             </div>
+            <div class="notification-toggle" id="notifToggle" title="Toggle desktop notifications">
+                <span class="notif-icon" id="notifIcon">🔔</span>
+                <span class="notif-label" id="notifLabel">Alerts Off</span>
+            </div>
             <div class="live-clock" id="liveClock"></div>
         </div>
     </header>
@@ -66,16 +70,15 @@
         </div>
     </div>
 
-    <!-- Timeframe Selector -->
+    <!-- Data View Mode Selector -->
     <div class="timeframe-bar" id="timeframeBar">
-        <div class="tf-bar-label">⏱️ Whale Volume Timeframe</div>
+        <div class="tf-bar-label">📊 Data View Mode</div>
         <div class="tf-bar-buttons" id="tfWhaleVolume">
-            <button class="tf-bar-btn" data-tf="1h">1H</button>
-            <button class="tf-bar-btn" data-tf="4h">4H</button>
-            <button class="tf-bar-btn" data-tf="24h">24H</button>
-            <button class="tf-bar-btn active" data-tf="Live">LIVE</button>
+            <button class="tf-bar-btn active" data-tf="Historical">HISTORICAL</button>
+            <button class="tf-bar-btn" data-tf="Current">CURRENT</button>
         </div>
-        <div class="tf-bar-hint" id="tfBarHint">Showing all session data</div>
+        <button class="clear-btn tf-clear-btn" id="clearDataBtn" style="display:none;" title="Clear data and start tracking from now">✕ Clear Data</button>
+        <div class="tf-bar-hint" id="tfBarHint">Showing all historical data from backend</div>
     </div>
 
     <!-- Summary Cards Section -->
@@ -217,7 +220,6 @@
                 </div>
                 <div class="panel-badges">
                     <div class="panel-badge" id="tradeCount">0 trades</div>
-                    <button class="clear-btn" id="clearTrades" title="Clear trade history">✕ Clear</button>
                 </div>
             </div>
             <div class="trades-container">
