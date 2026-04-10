@@ -61,11 +61,13 @@ class WhaleFlowDashboard {
         this.renderCoinSelector();
         this.setupEventListeners();
         this.connectWebSocket();
-        this.fetchFundingData();
+        if (!window.__SERVER_STATE__) this.fetchFundingData();
         this.startClock();
 
         // Periodic updates
-        this.fundingInterval = setInterval(() => this.fetchFundingData(), 15000);
+        this.fundingInterval = setInterval(() => {
+            if (!this.localWsActive) this.fetchFundingData();
+        }, 15000);
         this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
 
         // Absorption engine: snapshot every 5 minutes, evaluate every 15 seconds
@@ -75,10 +77,28 @@ class WhaleFlowDashboard {
         // Reversal Radar: evaluate all signals every 15 seconds
         this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 15000);
 
+        // System panel state
+        this._serverSystemState = {
+            started_at: 0,
+            uptime_seconds: 0,
+            connected: false,
+            last_funding_update: 0,
+            last_trade_update: 0,
+            snapshot_loaded: false,
+            exchange_status: {},
+        };
+        this._systemPanelInterval = setInterval(() => this.updateSystemPanel(), 5000);
+
+        // Log sidebar state
+        this._logEntries = [];
+        this._logSidebarOpen = false;
+
         // Load server-accumulated state if available (Streamlit deployment)
         if (window.__SERVER_STATE__) {
             this.loadServerState(window.__SERVER_STATE__);
         }
+
+        // Absorption preview removed — real engine handles detection
     }
 
     _newCoinData() {
@@ -93,6 +113,8 @@ class WhaleFlowDashboard {
             currentBuyCount: 0,
             currentSellCount: 0,
             whaleBuckets: [],
+            fundingHistory: [],
+            marketHistory: [],
             pressureHistory: [],
             lastPressureSnapshot: { buys: 0, sells: 0 },
 
@@ -214,7 +236,8 @@ class WhaleFlowDashboard {
             'totalWhaleBuys', 'whaleBuyCount', 'buyBarFill',
             'totalWhaleSells', 'whaleSellCount', 'sellBarFill',
             'vsCircle', 'winningBadge', 'winningArrow', 'winningLabel', 'dominancePct',
-            'fundingRate', 'fundingDirection', 'absorptionStatus', 'fundingCard',
+            'fundingRate', 'fundingHourlyChange', 'fundingFourHourChange', 'fundingDailyChange', 'fundingDirection', 'absorptionStatus', 'fundingCard',
+            'markPriceHourlyChange', 'markPriceFourHourChange', 'markPriceDailyChange', 'openInterestHourlyChange', 'openInterestFourHourChange', 'openInterestDailyChange', 'dayVolumeHourlyChange', 'dayVolumeFourHourChange', 'dayVolumeDailyChange',
             'notifToggle', 'notifLabel', 'notifIcon',
             'markPrice', 'oraclePrice', 'openInterest', 'dayVolume',
             'obAsks', 'obBids', 'obLevels', 'whaleWallCount',
@@ -255,7 +278,20 @@ class WhaleFlowDashboard {
             'regCondRange', 'regCondVolume', 'regCondCVD', 'regCondBalance',
 
             // Mega Whales
-            'megaWhaleCount', 'megaWhaleList'
+            'megaWhaleCount', 'megaWhaleList',
+
+            // System Panel
+            'systemPanel', 'systemPanelToggle', 'systemPanelArrow', 'systemPanelBody',
+            'sysUptime', 'sysBackend', 'sysLastFunding', 'sysLastTrade', 'sysSnapshot',
+            'exchangeStatusGrid',
+            'exchHL', 'exchBIN', 'exchBYB', 'exchOKX', 'exchKRK', 'exchCB',
+
+            // Log Sidebar
+            'logSidebar', 'logSidebarTab', 'logSidebarContent', 'logBadge',
+            'logClearBtn', 'logCloseBtn', 'logGroups',
+            'logGroupERROR', 'logGroupWARNING', 'logGroupINFO', 'logGroupDEBUG',
+            'logCountERROR', 'logCountWARNING', 'logCountINFO', 'logCountDEBUG',
+            'logBodyERROR', 'logBodyWARNING', 'logBodyINFO', 'logBodyDEBUG'
         ];
         ids.forEach(id => {
             this.elements[id] = document.getElementById(id);
@@ -363,7 +399,7 @@ class WhaleFlowDashboard {
                     hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
                 }
 
-                this.showToast('🗑️ Data cleared — tracking from now');
+                this.showToast('Data cleared - tracking from now');
             });
         }
 
@@ -414,6 +450,8 @@ class WhaleFlowDashboard {
             this.localWs.onopen = () => {
                 console.log('Local backend connected successfully');
                 this.localWsActive = true;
+                this._serverSystemState.connected = true;
+                this.updateSystemPanel();
             };
             this.localWs.onmessage = (event) => {
                 try {
@@ -425,6 +463,8 @@ class WhaleFlowDashboard {
             this.localWs.onclose = (event) => {
                 console.log('Local WS closed, falling back to all public exchanges direct natively:', event.code, event.reason);
                 this.localWsActive = false;
+                this._serverSystemState.connected = false;
+                this.updateSystemPanel();
                 // Cloud Deployment Fallback: Subscribe to HL trades directly
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({
@@ -451,6 +491,7 @@ class WhaleFlowDashboard {
             this.isConnected = true;
             this.reconnectAttempts = 0;
             this.updateConnectionStatus('connected');
+            this.updateSystemPanel();
             this.subscribeAll();
 
             // Check if localWs is active after a short delay, otherwise fallback
@@ -486,7 +527,9 @@ class WhaleFlowDashboard {
         this.ws.onclose = (event) => {
             console.log('WebSocket closed:', event.code, event.reason);
             this.isConnected = false;
+            this._serverSystemState.connected = !!this.localWsActive;
             this.updateConnectionStatus('disconnected');
+            this.updateSystemPanel();
             if (this._pingInterval) {
                 clearInterval(this._pingInterval);
                 this._pingInterval = null;
@@ -566,11 +609,30 @@ class WhaleFlowDashboard {
             btn.classList.toggle('active', btn.dataset.coin === newCoin);
         });
 
-        this.elements.markPrice.textContent = '$—';
-        this.elements.oraclePrice.textContent = '$—';
-        this.elements.openInterest.textContent = '$—';
-        this.elements.dayVolume.textContent = '$—';
-        this.elements.fundingRate.textContent = '—';
+        this.elements.markPrice.textContent = '$--';
+        if (this.elements.oraclePrice) this.elements.oraclePrice.textContent = '$--';
+        this.elements.openInterest.textContent = '$--';
+        this.elements.dayVolume.textContent = '$--';
+        this.elements.fundingRate.textContent = '--';
+        this.elements.fundingHourlyChange.textContent = '>1h --';
+        this.elements.fundingFourHourChange.textContent = '>4h --';
+        this.elements.fundingDailyChange.textContent = '>24h --';
+        this.elements.markPriceHourlyChange.textContent = '>1h --';
+        this.elements.markPriceFourHourChange.textContent = '>4h --';
+        this.elements.markPriceDailyChange.textContent = '>24h --';
+        this.elements.openInterestHourlyChange.textContent = '>1h --';
+        this.elements.openInterestFourHourChange.textContent = '>4h --';
+        this.elements.openInterestDailyChange.textContent = '>24h --';
+        this.elements.dayVolumeHourlyChange.textContent = '>1h --';
+        this.elements.dayVolumeFourHourChange.textContent = '>4h --';
+        this.elements.dayVolumeDailyChange.textContent = '>24h --';
+
+        const immediateMeta = this.allCoinMeta.get(newCoin);
+        if (immediateMeta) {
+            this.fundingData = { ...immediateMeta };
+            this.updateFundingUI();
+            this.updateMarketDataUI();
+        }
 
         this.updateSummaryCards();
         this.renderTradesList();
@@ -591,7 +653,7 @@ class WhaleFlowDashboard {
                 }));
             }
         }
-        this.fetchFundingData();
+        if (!this.localWsActive) this.fetchFundingData();
         this.renderAbsorptionUI();
         this.renderReversalRadar();
         this.renderMegaWhales();
@@ -737,15 +799,71 @@ class WhaleFlowDashboard {
         if (!msg.channel || !msg.data) return;
 
         switch (msg.channel) {
-            case 'trades':
+            case 'trades': {
+                const nowSec = Date.now() / 1000;
+                this._serverSystemState.last_trade_update = nowSec;
+                (msg.data || []).forEach(trade => {
+                    const ex = trade.exchange;
+                    if (!ex) return;
+                    if (!this._serverSystemState.exchange_status[ex]) {
+                        this._serverSystemState.exchange_status[ex] = { connected: true, last_msg: 0, last_error: '' };
+                    }
+                    this._serverSystemState.exchange_status[ex].connected = true;
+                    this._serverSystemState.exchange_status[ex].last_msg = nowSec;
+                });
                 this.handleTrades(msg.data);
+                this.updateSystemPanel();
                 break;
+            }
             case 'l2Book':
                 this.handleL2Book(msg.data);
+                break;
+            case 'funding':
+                this.handleFundingUpdate(msg.data);
+                break;
+            case 'log':
+                this._logEntries.push(msg.data);
+                if (this._logEntries.length > 500) this._logEntries.shift();
+                this._renderLogSidebar();
                 break;
         }
     }
 
+
+    handleFundingUpdate(data) {
+        if (!data || !data.coins) return;
+
+        const now = (data.timestamp || (Date.now() / 1000)) * 1000;
+        Object.entries(data.coins).forEach(([coin, info]) => {
+            const meta = {
+                funding: parseFloat(info.funding || 0),
+                openInterest: parseFloat(info.open_interest || 0),
+                markPx: parseFloat(info.mark_px || 0),
+                oraclePx: parseFloat(info.oracle_px || 0),
+                dayNtlVlm: parseFloat(info.day_volume || 0),
+            };
+            this._applyCoinMeta(coin, meta, now);
+            const fundingStore = this.getCoinData(coin);
+            fundingStore.fundingHistory.push({
+                time: now,
+                funding: meta.funding,
+            });
+            if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
+        });
+
+        const activeMeta = this.allCoinMeta.get(this.currentCoin);
+        if (activeMeta) {
+            this.fundingData = { ...activeMeta };
+            this.updateFundingUI();
+            this.updateMarketDataUI();
+            this.renderRegime();
+        }
+
+        if (data.timestamp) {
+            this._serverSystemState.last_funding_update = data.timestamp;
+        }
+        this.updateSystemPanel();
+    }
     handleTrades(trades) {
         if (!Array.isArray(trades)) return;
 
@@ -926,6 +1044,110 @@ class WhaleFlowDashboard {
 
     // ==================== FUNDING DATA ====================
 
+    _applyCoinMeta(coin, meta, now = Date.now()) {
+        if (!meta || !meta.markPx) return;
+        this.allCoinMeta.set(coin, { ...meta });
+
+        const d = this.getCoinData(coin);
+        const rg = d.regime;
+
+        rg.priceHistory.push({ time: now, price: meta.markPx });
+        const cutoff = now - 3600000;
+        rg.priceHistory = rg.priceHistory.filter(p => p.time > cutoff);
+
+        d.marketHistory.push({
+            time: now,
+            markPx: meta.markPx,
+            openInterest: (meta.openInterest || 0) * (meta.markPx || 0),
+            dayVolume: meta.dayNtlVlm || 0,
+        });
+        if (d.marketHistory.length > 6000) d.marketHistory = d.marketHistory.slice(-6000);
+
+        if (rg.priceHistory.length < 2) return;
+
+        const thirtyMinAgo = now - 1800000;
+        const recentPrices = rg.priceHistory.filter(p => p.time > thirtyMinAgo).map(p => p.price);
+        if (recentPrices.length < 2) return;
+
+        const minPrice = Math.min(...recentPrices);
+        const maxPrice = Math.max(...recentPrices);
+        const rangePct = minPrice > 0 ? ((maxPrice - minPrice) / minPrice) * 100 : 0;
+
+        const rangeThresholds = { BTC: 0.15, ETH: 0.20, SOL: 0.35, XRP: 0.30, PAXG: 0.08 };
+        const trendRange = (rangeThresholds[coin] || 0.20) * 2;
+        const flatRange = rangeThresholds[coin] || 0.20;
+        let rangeScore;
+        if (rangePct >= trendRange) rangeScore = 40;
+        else if (rangePct >= flatRange) rangeScore = Math.round(15 + (rangePct - flatRange) / (trendRange - flatRange) * 25);
+        else rangeScore = Math.round((rangePct / flatRange) * 15);
+        rg.rangeScore = rangeScore;
+
+        const buckets = d.volumeBuckets;
+        let volumeScore = 15;
+        if (buckets.length >= 3) {
+            const avgVol = buckets.reduce((s, b) => s + b.total, 0) / buckets.length;
+            const currentVol = d.currentBucketBuy + d.currentBucketSell;
+            if (avgVol > 0) {
+                const ratio = currentVol / avgVol;
+                if (ratio >= 2.0) volumeScore = 30;
+                else if (ratio >= 1.0) volumeScore = Math.round(15 + (ratio - 1) * 15);
+                else if (ratio >= 0.4) volumeScore = Math.round((ratio - 0.4) / 0.6 * 15);
+                else volumeScore = 0;
+            }
+        }
+        rg.volumeScore = volumeScore;
+
+        let cvdScore = 7;
+        if (d.totalBuyVolume + d.totalSellVolume > 0) {
+            const cvd = d.totalBuyVolume - d.totalSellVolume;
+            const totalVol = d.totalBuyVolume + d.totalSellVolume;
+            const cvdRatio = Math.abs(cvd) / totalVol;
+            if (cvdRatio >= 0.15) cvdScore = 15;
+            else if (cvdRatio >= 0.05) cvdScore = Math.round(7 + (cvdRatio - 0.05) / 0.10 * 8);
+            else cvdScore = Math.round(cvdRatio / 0.05 * 7);
+        }
+        rg.cvdScore = cvdScore;
+
+        let balanceScore = 7;
+        if (d.pressureHistory.length >= 3) {
+            const recent = d.pressureHistory.slice(-6);
+            const totalBuys = recent.reduce((s, p) => s + p.buys, 0);
+            const totalSells = recent.reduce((s, p) => s + p.sells, 0);
+            const total = totalBuys + totalSells;
+            if (total > 0) {
+                const buyPct = totalBuys / total;
+                const imbalance = Math.abs(buyPct - 0.5) * 2;
+                if (imbalance >= 0.3) balanceScore = 15;
+                else if (imbalance >= 0.1) balanceScore = Math.round(7 + (imbalance - 0.1) / 0.2 * 8);
+                else balanceScore = Math.round(imbalance / 0.1 * 7);
+            }
+        }
+        rg.balanceScore = balanceScore;
+
+        const rawScore = rangeScore + volumeScore + cvdScore + balanceScore;
+        const currentLabel = rg.label;
+        const holdMinMs = 900000;
+        const timeSinceChange = now - rg.lastChangeTime;
+        const canChange = rg.lastChangeTime === 0 || timeSinceChange >= holdMinMs;
+
+        let newLabel, newClass;
+        if (rawScore >= 60) { newLabel = 'TRENDING'; newClass = 'trending'; }
+        else if (rawScore >= 40) { newLabel = 'TRANSITION'; newClass = 'transition'; }
+        else { newLabel = 'CHOPPY'; newClass = 'choppy'; }
+
+        const isWarmup = rg.priceHistory.length < 8;
+        if (isWarmup) {
+            rg.label = 'ANALYZING...';
+            rg.cssClass = '';
+        } else if ((newLabel !== currentLabel || rg.cssClass !== newClass) && canChange) {
+            rg.label = newLabel;
+            rg.cssClass = newClass;
+            rg.lastChangeTime = now;
+        }
+
+        rg.score = rawScore;
+    }
+
     async fetchFundingData() {
         try {
             const response = await fetch('https://api.hyperliquid.xyz/info', {
@@ -942,153 +1164,39 @@ class WhaleFlowDashboard {
             const meta = data[0];
             const contexts = data[1];
             const universe = meta.universe || [];
+            const now = Date.now();
 
-            // Store meta for ALL tracked coins (funding, OI, price)
             this.coinList.forEach(coin => {
                 const i = universe.findIndex(u => u.name === coin);
-                if (i !== -1 && contexts[i]) {
-                    const ctx = contexts[i];
-                    this.allCoinMeta.set(coin, {
-                        funding: parseFloat(ctx.funding || '0'),
-                        openInterest: parseFloat(ctx.openInterest || '0'),
-                        markPx: parseFloat(ctx.markPx || '0'),
-                        oraclePx: parseFloat(ctx.oraclePx || '0'),
-                        dayNtlVlm: parseFloat(ctx.dayNtlVlm || '0'),
-                        premium: parseFloat(ctx.premium || '0'),
-                    });
-                }
+                if (i === -1 || !contexts[i]) return;
+
+                const ctx = contexts[i];
+                const coinMeta = {
+                    funding: parseFloat(ctx.funding || '0'),
+                    openInterest: parseFloat(ctx.openInterest || '0'),
+                    markPx: parseFloat(ctx.markPx || '0'),
+                    oraclePx: parseFloat(ctx.oraclePx || '0'),
+                    dayNtlVlm: parseFloat(ctx.dayNtlVlm || '0'),
+                    premium: parseFloat(ctx.premium || '0'),
+                };
+
+                this._applyCoinMeta(coin, coinMeta, now);
             });
 
-            // Set active coin's funding
             const activeMeta = this.allCoinMeta.get(this.currentCoin);
             if (activeMeta) {
                 this.fundingData = { ...activeMeta };
+                const fundingStore = this.getCoinData(this.currentCoin);
+                fundingStore.fundingHistory.push({ time: now, funding: activeMeta.funding });
+                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
                 this.updateFundingUI();
                 this.updateMarketDataUI();
+                this.renderRegime();
             }
 
-
-
-            // ——— Market Regime evaluation for each coin ———
-            this.coinList.forEach(coin => {
-                const meta = this.allCoinMeta.get(coin);
-                if (!meta || !meta.markPx) return;
-                const d = this.getCoinData(coin);
-                const rg = d.regime;
-                const now = Date.now();
-
-                // Track price every poll (every ~15s)
-                rg.priceHistory.push({ time: now, price: meta.markPx });
-                // Keep last 60 minutes of prices
-                const cutoff = now - 3600000;
-                rg.priceHistory = rg.priceHistory.filter(p => p.time > cutoff);
-
-                // Need at least 30s of data (2 samples at 15s intervals)
-                if (rg.priceHistory.length < 2) return;
-
-                // --- Factor 1: Price Range (0-40 pts) ---
-                // Use last 30 min of prices for range calculation
-                const thirtyMinAgo = now - 1800000;
-                const recentPrices = rg.priceHistory.filter(p => p.time > thirtyMinAgo).map(p => p.price);
-                const minPrice = Math.min(...recentPrices);
-                const maxPrice = Math.max(...recentPrices);
-                const rangePct = minPrice > 0 ? ((maxPrice - minPrice) / minPrice) * 100 : 0;
-
-                // Thresholds vary by coin
-                const rangeThresholds = { BTC: 0.15, ETH: 0.20, SOL: 0.35, XRP: 0.30, PAXG: 0.08 };
-                const trendRange = (rangeThresholds[coin] || 0.20) * 2;   // Double = strong trend
-                const flatRange = rangeThresholds[coin] || 0.20;
-                let rangeScore;
-                if (rangePct >= trendRange) rangeScore = 40;
-                else if (rangePct >= flatRange) rangeScore = Math.round(15 + (rangePct - flatRange) / (trendRange - flatRange) * 25);
-                else rangeScore = Math.round((rangePct / flatRange) * 15);
-                rg.rangeScore = rangeScore;
-
-                // --- Factor 2: Volume vs Average (0-30 pts) ---
-                const buckets = d.volumeBuckets;
-                let volumeScore = 15; // default mid
-                if (buckets.length >= 3) {
-                    const avgVol = buckets.reduce((s, b) => s + b.total, 0) / buckets.length;
-                    const currentVol = d.currentBucketBuy + d.currentBucketSell;
-                    if (avgVol > 0) {
-                        const ratio = currentVol / avgVol;
-                        if (ratio >= 2.0) volumeScore = 30;
-                        else if (ratio >= 1.0) volumeScore = Math.round(15 + (ratio - 1) * 15);
-                        else if (ratio >= 0.4) volumeScore = Math.round((ratio - 0.4) / 0.6 * 15);
-                        else volumeScore = 0;
-                    }
-                }
-                rg.volumeScore = volumeScore;
-
-                // --- Factor 3: CVD direction (0-15 pts) ---
-                let cvdScore = 7; // default mid
-                if (d.totalBuyVolume + d.totalSellVolume > 0) {
-                    const cvd = d.totalBuyVolume - d.totalSellVolume;
-                    const totalVol = d.totalBuyVolume + d.totalSellVolume;
-                    const cvdRatio = Math.abs(cvd) / totalVol;
-                    // Strong directional CVD = trending
-                    if (cvdRatio >= 0.15) cvdScore = 15;
-                    else if (cvdRatio >= 0.05) cvdScore = Math.round(7 + (cvdRatio - 0.05) / 0.10 * 8);
-                    else cvdScore = Math.round(cvdRatio / 0.05 * 7);
-                }
-                rg.cvdScore = cvdScore;
-
-                // --- Factor 4: Buy/Sell Balance (0-15 pts) ---
-                let balanceScore = 7; // default mid
-                if (d.pressureHistory.length >= 3) {
-                    const recent = d.pressureHistory.slice(-6);
-                    const totalBuys = recent.reduce((s, p) => s + p.buys, 0);
-                    const totalSells = recent.reduce((s, p) => s + p.sells, 0);
-                    const total = totalBuys + totalSells;
-                    if (total > 0) {
-                        const buyPct = totalBuys / total;
-                        const imbalance = Math.abs(buyPct - 0.5) * 2; // 0 = balanced, 1 = fully one-sided
-                        if (imbalance >= 0.3) balanceScore = 15;
-                        else if (imbalance >= 0.1) balanceScore = Math.round(7 + (imbalance - 0.1) / 0.2 * 8);
-                        else balanceScore = Math.round(imbalance / 0.1 * 7);
-                    }
-                }
-                rg.balanceScore = balanceScore;
-
-                // --- Final Score (0-100) ---
-                const rawScore = rangeScore + volumeScore + cvdScore + balanceScore;
-
-                // --- Hysteresis + Hold Time ---
-                const currentLabel = rg.label;
-                const holdMinMs = 900000; // 15 min minimum hold
-                const timeSinceChange = now - rg.lastChangeTime;
-                const canChange = rg.lastChangeTime === 0 || timeSinceChange >= holdMinMs;
-
-                let newLabel, newClass;
-                if (rawScore >= 60) { newLabel = '🟢 TRENDING'; newClass = 'trending'; }
-                else if (rawScore >= 30) { newLabel = '🟡 CHOPPY'; newClass = 'choppy'; }
-                else { newLabel = '🔴 SIDEWAYS'; newClass = 'sideways'; }
-
-                // Apply hysteresis: need stronger signal to change regime
-                if (canChange) {
-                    // Add buffer zone: must clearly cross into new regime
-                    const shouldChange =
-                        (newClass === 'trending' && rawScore >= 65) ||
-                        (newClass === 'sideways' && rawScore <= 25) ||
-                        (newClass === 'choppy' && rawScore >= 35 && rawScore <= 55) ||
-                        currentLabel === 'ANALYZING\u2026';
-
-                    if (shouldChange && newLabel !== currentLabel) {
-                        rg.label = newLabel;
-                        rg.cssClass = newClass;
-                        rg.lastChangeTime = now;
-                    }
-                }
-
-                // Always update score (smooth)
-                rg.score = Math.round(rg.score * 0.7 + rawScore * 0.3); // EMA smoothing
-            });
-
-            // Render regime for active coin
-            this.renderRegime();
-
+            if (!this.localWsActive) this.updateSystemPanel();
         } catch (err) {
-            console.error('Funding fetch error:', err);
+            console.error('Funding fetch failed:', err);
         }
     }
 
@@ -1290,6 +1398,47 @@ class WhaleFlowDashboard {
     /**
      * Render the absorption detection UI for the current coin.
      */
+    previewAbsorptionAlertOnce() {
+        try {
+
+            const d = this.getCoinData(this.currentCoin);
+            const snapshot = {
+                detected: d.abs.detected,
+                side: d.abs.side,
+                conditionsMet: d.abs.conditionsMet,
+                conditions: { ...d.abs.conditions },
+                metrics: { ...d.abs.metrics },
+            };
+
+            d.abs.detected = true;
+            d.abs.side = 'bearish';
+            d.abs.conditionsMet = 4;
+            d.abs.conditions = { flow: true, reversal: true, oi: true, funding: true };
+            d.abs.metrics = {
+                ...d.abs.metrics,
+                cvd: Math.max(Math.abs(d.abs.metrics.cvd || 0), 1850000),
+                vol: Math.max(d.abs.metrics.vol || 0, 4200000),
+                priceDelta: (d.abs.metrics.priceDelta != null && d.abs.metrics.priceDelta <= 0.02) ? d.abs.metrics.priceDelta : -0.12,
+                oiDelta: Math.max(d.abs.metrics.oiDelta || 0, 0.71),
+                imbalance: Math.max(d.abs.metrics.imbalance || 0, 76),
+                funding: d.abs.metrics.funding || this.fundingData?.funding || 0.00006,
+            };
+
+            this.renderAbsorptionUI();
+
+            setTimeout(() => {
+                d.abs.detected = snapshot.detected;
+                d.abs.side = snapshot.side;
+                d.abs.conditionsMet = snapshot.conditionsMet;
+                d.abs.conditions = snapshot.conditions;
+                d.abs.metrics = snapshot.metrics;
+                this.renderAbsorptionUI();
+            }, 4500);
+        } catch (err) {
+            console.warn('Absorption preview skipped:', err);
+        }
+    }
+
     renderAbsorptionUI() {
         const d = this.getCoinData(this.currentCoin);
         const abs = d.abs;
@@ -1365,11 +1514,11 @@ class WhaleFlowDashboard {
             if (!dotEl || !valEl || !rowEl) return;
 
             if (met) {
-                dotEl.textContent = '●';
+                dotEl.innerHTML = '&bull;';
                 dotEl.className = 'cond-dot active';
                 rowEl.className = 'abs-cond-row met';
             } else {
-                dotEl.textContent = '○';
+                dotEl.innerHTML = '&#9675;';
                 dotEl.className = 'cond-dot';
                 rowEl.className = 'abs-cond-row';
             }
@@ -1462,11 +1611,11 @@ class WhaleFlowDashboard {
             const badge = statusEl.querySelector('.absorption-badge');
             if (badge) {
                 if (abs.detected) {
+                    badge.style.display = 'inline-flex';
                     badge.className = 'absorption-badge absorbing';
                     badge.textContent = abs.side === 'bullish' ? '🟢 Bullish Absorption' : '🔴 Bearish Absorption';
                 } else {
-                    badge.className = 'absorption-badge';
-                    badge.textContent = `⚖️ Normal (${abs.conditionsMet}/4)`;
+                    badge.style.display = 'none';
                 }
             }
         }
@@ -1515,7 +1664,7 @@ class WhaleFlowDashboard {
 
         if (total === 0) {
             badge.className = 'winning-badge';
-            arrow.textContent = '⬌'; label.textContent = 'Even'; domPct.textContent = '50%';
+            arrow.textContent = '='; label.textContent = 'Even'; domPct.textContent = '50%';
             return;
         }
 
@@ -1523,18 +1672,58 @@ class WhaleFlowDashboard {
 
         if (v.buyVol > v.sellVol) {
             badge.className = 'winning-badge bulls';
-            arrow.textContent = '⬆'; label.textContent = 'BULLS';
+            arrow.textContent = '^'; label.textContent = 'BULLS';
             domPct.textContent = buyPct.toFixed(1) + '%';
             domPct.className = 'dominance-value bulls';
         } else if (v.sellVol > v.buyVol) {
             badge.className = 'winning-badge bears';
-            arrow.textContent = '⬇'; label.textContent = 'BEARS';
+            arrow.textContent = 'v'; label.textContent = 'BEARS';
             domPct.textContent = (100 - buyPct).toFixed(1) + '%';
             domPct.className = 'dominance-value bears';
         } else {
             badge.className = 'winning-badge';
-            arrow.textContent = '⬌'; label.textContent = 'Even'; domPct.textContent = '50%';
+            arrow.textContent = '='; label.textContent = 'Even'; domPct.textContent = '50%';
             domPct.className = 'dominance-value';
+        }
+    }
+
+    _getDeltaBase(history, cutoffMs, maxGapMs = Number.POSITIVE_INFINITY) {
+        let base = null;
+        for (let i = 0; i < history.length; i++) {
+            if (history[i].time <= cutoffMs) {
+                base = history[i];
+            } else {
+                break;
+            }
+        }
+        const fallback = base || history[0] || null;
+        const complete = !!(base && (cutoffMs - base.time) <= maxGapMs);
+        return {
+            base: fallback,
+            complete,
+        };
+    }
+
+    _getPercentChange(current, baseValue) {
+        if (!Number.isFinite(current) || !Number.isFinite(baseValue) || baseValue <= 0) return null;
+        return ((current - baseValue) / baseValue) * 100;
+    }
+
+    _renderChangeBadge(el, changeValue, { intervalText = '1h', incompleteText = null, compact = false, complete = true, suffix = '%', formatter = null, zeroThreshold = 0.00005 } = {}) {
+        if (!el) return;
+        el.className = `${compact ? 'mini-hourly-change' : 'funding-hourly-change'} mono`;
+        const label = complete ? intervalText : (incompleteText || `>${intervalText}`);
+        const formatted = (value) => formatter ? formatter(value) : `${value.toFixed(4)}${suffix}`;
+        if (changeValue === null || Math.abs(changeValue) < zeroThreshold) {
+            el.innerHTML = `&harr; ${label} ${formatted(0)}`;
+            return;
+        }
+        if (changeValue > 0) {
+            el.classList.add('up');
+            el.innerHTML = `&uarr; ${label} +${formatted(changeValue)}`;
+        } else {
+            el.classList.add('down');
+            el.innerHTML = `&darr; ${label} ${formatted(Math.abs(changeValue))}`;
         }
     }
 
@@ -1543,23 +1732,26 @@ class WhaleFlowDashboard {
         const rate = this.fundingData.funding;
         const direction = this.elements.fundingDirection;
         const rateEl = this.elements.fundingRate;
+        const hourlyEl = this.elements.fundingHourlyChange;
+        const fourHourEl = this.elements.fundingFourHourChange;
+        const dailyEl = this.elements.fundingDailyChange;
 
         rateEl.textContent = (rate * 100).toFixed(4) + '%';
 
         let badgeClass, badgeText, currentState;
         if (rate > 0.000005) {
             badgeClass = 'positive';
-            badgeText = '⬆ Positive (Longs Pay)';
+            badgeText = '&uarr; Positive (Longs Pay)';
             rateEl.style.color = 'var(--buy-primary)';
             currentState = 'positive';
         } else if (rate < -0.000005) {
             badgeClass = 'negative';
-            badgeText = '⬇ Negative (Shorts Pay)';
+            badgeText = '&darr; Negative (Shorts Pay)';
             rateEl.style.color = 'var(--sell-primary)';
             currentState = 'negative';
         } else {
             badgeClass = 'neutral';
-            badgeText = '⬌ Neutral';
+            badgeText = '&harr; Neutral';
             rateEl.style.color = 'var(--accent-1)';
             currentState = 'neutral';
         }
@@ -1568,30 +1760,133 @@ class WhaleFlowDashboard {
         const d = this.getCoinData(coin);
         if (d.prevFundingState !== undefined && d.prevFundingState !== currentState) {
             if (currentState === 'positive' && this._canNotify(`${coin}_funding_flip_pos`, 90000)) {
-                this.sendAlert(`💰 Funding Flipped Positive (+5) on ${coin}`, {
-                    desktopTitle: `💰 Funding Flip — ${coin}`,
+                this.sendAlert(`Funding Flipped Positive (+5) on ${coin}`, {
+                    desktopTitle: `Funding Flip - ${coin}`,
                     desktopBody: `Funding rate turned positive (${(rate*100).toFixed(4)}%). Longs are now paying shorts.`
                 });
             } else if (currentState === 'negative' && this._canNotify(`${coin}_funding_flip_neg`, 90000)) {
-                this.sendAlert(`💰 Funding Flipped Negative (-5) on ${coin}`, {
-                    desktopTitle: `💰 Funding Flip — ${coin}`,
+                this.sendAlert(`Funding Flipped Negative (-5) on ${coin}`, {
+                    desktopTitle: `Funding Flip - ${coin}`,
                     desktopBody: `Funding rate turned negative (${(rate*100).toFixed(4)}%). Shorts are now paying longs.`
                 });
             }
         }
         d.prevFundingState = currentState;
 
-        this.elements.fundingCard.className = `stat-card funding-card ${badgeClass}`;
+        const now = Date.now();
+        const history = (d.fundingHistory || []).filter(h => h && h.time && Number.isFinite(h.funding));
+        const hourBase = this._getDeltaBase(history, now - 3600000, 10 * 60 * 1000);
+        const fourHourBase = this._getDeltaBase(history, now - 14400000, 30 * 60 * 1000);
+        const dayBase = this._getDeltaBase(history, now - 86400000, 90 * 60 * 1000);
+        this._renderChangeBadge(hourlyEl, hourBase.base ? ((rate - hourBase.base.funding) * 100) : null, {
+            intervalText: '1h',
+            incompleteText: '>1h',
+            complete: hourBase.complete,
+        });
+        this._renderChangeBadge(fourHourEl, fourHourBase.base ? ((rate - fourHourBase.base.funding) * 100) : null, {
+            intervalText: '4h',
+            incompleteText: '>4h',
+            complete: fourHourBase.complete,
+        });
+        this._renderChangeBadge(dailyEl, dayBase.base ? ((rate - dayBase.base.funding) * 100) : null, {
+            intervalText: '24h',
+            incompleteText: '>24h',
+            complete: dayBase.complete,
+        });
+
+        this.elements.fundingCard.className = `summary-card funding-card market-combo-card ${badgeClass}`;
         direction.innerHTML = `<span class="direction-badge ${badgeClass}">${badgeText}</span>`;
     }
 
     updateMarketDataUI() {
         if (!this.fundingData) return;
-        const d = this.fundingData;
-        this.elements.markPrice.textContent = '$' + this.formatPrice(d.markPx);
-        this.elements.oraclePrice.textContent = '$' + this.formatPrice(d.oraclePx);
-        this.elements.openInterest.textContent = '$' + this.formatCompact(d.openInterest * d.markPx);
-        this.elements.dayVolume.textContent = '$' + this.formatCompact(d.dayNtlVlm);
+        const meta = this.fundingData;
+        const coinData = this.getCoinData(this.currentCoin);
+        const now = Date.now();
+        const marketHistory = (coinData.marketHistory || []).filter(h => h && h.time);
+        const currentOiNotional = (meta.openInterest || 0) * (meta.markPx || 0);
+
+        this.elements.markPrice.textContent = '$' + this.formatPrice(meta.markPx);
+        if (this.elements.oraclePrice) {
+            this.elements.oraclePrice.textContent = '$' + this.formatPrice(meta.oraclePx);
+        }
+        this.elements.openInterest.textContent = '$' + this.formatCompact(currentOiNotional);
+        this.elements.dayVolume.textContent = '$' + this.formatCompact(meta.dayNtlVlm);
+
+        const pricePoints = marketHistory.filter(h => Number.isFinite(h.markPx));
+        const priceHourBase = this._getDeltaBase(pricePoints, now - 3600000, 10 * 60 * 1000);
+        const priceFourHourBase = this._getDeltaBase(pricePoints, now - 14400000, 30 * 60 * 1000);
+        const priceDayBase = this._getDeltaBase(pricePoints, now - 86400000, 90 * 60 * 1000);
+        this._renderChangeBadge(this.elements.markPriceHourlyChange, priceHourBase.base ? (meta.markPx - priceHourBase.base.markPx) : null, {
+            intervalText: '1h',
+            incompleteText: '>1h',
+            complete: priceHourBase.complete,
+            suffix: '',
+            formatter: value => '$' + this.formatPrice(value),
+            zeroThreshold: 0.00005,
+        });
+        this._renderChangeBadge(this.elements.markPriceFourHourChange, priceFourHourBase.base ? (meta.markPx - priceFourHourBase.base.markPx) : null, {
+            intervalText: '4h',
+            incompleteText: '>4h',
+            complete: priceFourHourBase.complete,
+            suffix: '',
+            formatter: value => '$' + this.formatPrice(value),
+            zeroThreshold: 0.00005,
+        });
+        this._renderChangeBadge(this.elements.markPriceDailyChange, priceDayBase.base ? (meta.markPx - priceDayBase.base.markPx) : null, {
+            intervalText: '24h',
+            incompleteText: '>24h',
+            complete: priceDayBase.complete,
+            suffix: '',
+            formatter: value => '$' + this.formatPrice(value),
+            zeroThreshold: 0.00005,
+        });
+
+        const oiPoints = marketHistory.filter(h => Number.isFinite(h.openInterest));
+        const oiHourBase = this._getDeltaBase(oiPoints, now - 3600000, 10 * 60 * 1000);
+        const oiFourHourBase = this._getDeltaBase(oiPoints, now - 14400000, 30 * 60 * 1000);
+        const oiDayBase = this._getDeltaBase(oiPoints, now - 86400000, 90 * 60 * 1000);
+        this._renderChangeBadge(this.elements.openInterestHourlyChange, this._getPercentChange(currentOiNotional, oiHourBase.base?.openInterest), {
+            intervalText: '1h',
+            incompleteText: '>1h',
+            compact: true,
+            complete: oiHourBase.complete,
+        });
+        this._renderChangeBadge(this.elements.openInterestFourHourChange, this._getPercentChange(currentOiNotional, oiFourHourBase.base?.openInterest), {
+            intervalText: '4h',
+            incompleteText: '>4h',
+            compact: true,
+            complete: oiFourHourBase.complete,
+        });
+        this._renderChangeBadge(this.elements.openInterestDailyChange, this._getPercentChange(currentOiNotional, oiDayBase.base?.openInterest), {
+            intervalText: '24h',
+            incompleteText: '>24h',
+            compact: true,
+            complete: oiDayBase.complete,
+        });
+
+        const volPoints = marketHistory.filter(h => Number.isFinite(h.dayVolume));
+        const volHourBase = this._getDeltaBase(volPoints, now - 3600000, 10 * 60 * 1000);
+        const volFourHourBase = this._getDeltaBase(volPoints, now - 14400000, 30 * 60 * 1000);
+        const volDayBase = this._getDeltaBase(volPoints, now - 86400000, 90 * 60 * 1000);
+        this._renderChangeBadge(this.elements.dayVolumeHourlyChange, this._getPercentChange(meta.dayNtlVlm, volHourBase.base?.dayVolume), {
+            intervalText: '1h',
+            incompleteText: '>1h',
+            compact: true,
+            complete: volHourBase.complete,
+        });
+        this._renderChangeBadge(this.elements.dayVolumeFourHourChange, this._getPercentChange(meta.dayNtlVlm, volFourHourBase.base?.dayVolume), {
+            intervalText: '4h',
+            incompleteText: '>4h',
+            compact: true,
+            complete: volFourHourBase.complete,
+        });
+        this._renderChangeBadge(this.elements.dayVolumeDailyChange, this._getPercentChange(meta.dayNtlVlm, volDayBase.base?.dayVolume), {
+            intervalText: '24h',
+            incompleteText: '>24h',
+            compact: true,
+            complete: volDayBase.complete,
+        });
     }
 
     // ==================== ORDERBOOK RENDERING ====================
@@ -2094,6 +2389,21 @@ class WhaleFlowDashboard {
                 };
             }
             
+            if (serverCoin.funding_history && serverCoin.funding_history.length > 0) {
+                d.fundingHistory = serverCoin.funding_history.map(h => ({
+                    time: (h.time || 0) * 1000,
+                    funding: h.funding || 0,
+                }));
+            }
+            if (serverCoin.market_history && serverCoin.market_history.length > 0) {
+                d.marketHistory = serverCoin.market_history.map(h => ({
+                    time: (h.time || 0) * 1000,
+                    markPx: h.mark_px || 0,
+                    openInterest: h.open_interest || 0,
+                    dayVolume: h.day_volume || 0,
+                }));
+            }
+
             // Whale timeframe buckets
             if (serverCoin.whale_buckets && serverCoin.whale_buckets.length > 0) {
                 d.whaleBuckets = serverCoin.whale_buckets;
@@ -2200,6 +2510,7 @@ class WhaleFlowDashboard {
             };
             this.updateFundingUI();
             this.updateMarketDataUI();
+            this.renderRegime();
         }
 
         // Refresh all UI
@@ -2209,6 +2520,26 @@ class WhaleFlowDashboard {
         this.renderAbsorptionUI();
         this.renderReversalRadar();
         this.renderMegaWhales();
+
+        // Store system-level state for the System Panel
+        this._serverSystemState = {
+            started_at: state.started_at,
+            uptime_seconds: state.uptime_seconds,
+            connected: state.connected,
+            last_funding_update: state.last_funding_update || 0,
+            last_trade_update: state.last_trade_update || 0,
+            snapshot_loaded: state.snapshot_loaded || false,
+            exchange_status: state.exchange_status || {},
+        };
+        this.updateSystemPanel();
+        this._setupSystemPanelToggle();
+
+        // Load log buffer
+        if (state.log_buffer && Array.isArray(state.log_buffer)) {
+            this._logEntries = state.log_buffer;
+            this._renderLogSidebar();
+        }
+        this._setupLogSidebar();
 
         const tradeCount = Object.values(state.coins).reduce((s, c) => s + (c.whale_trades ? c.whale_trades.length : 0), 0);
         this.showToast(`📦 Loaded ${tradeCount} whale trades from server (${Math.round(state.uptime_seconds / 60)}min uptime)`);
@@ -2427,7 +2758,7 @@ class WhaleFlowDashboard {
                 }
             }
             if (dotEl) {
-                dotEl.textContent = sig.active ? '●' : '○';
+                dotEl.innerHTML = sig.active ? '&bull;' : '&#9675;';
                 dotEl.className = 'signal-dot';
                 if (sig.active) {
                     dotEl.classList.add('active');
@@ -2521,7 +2852,7 @@ class WhaleFlowDashboard {
             const typeClass = m.mega_type === 'initiative' ? 'initiative-entry' : 'clustering-entry';
             const typeBadge = m.mega_type === 'initiative'
                 ? '<span class="mega-type-badge initiative">⚡ INITIATIVE</span>'
-                : `<span class="mega-type-badge clustering">🦈 CLUSTER ×${m.cluster_count || '?'}</span>`;
+                : `<span class="mega-type-badge clustering">🦈 CLUSTER ?-${m.cluster_count || '?'}</span>`;
             const timeStr = this.formatTime(m.time);
             const valueStr = m.value >= 1e6 ? `$${(m.value/1e6).toFixed(2)}M` : `$${(m.value/1e3).toFixed(0)}K`;
 
@@ -2548,9 +2879,211 @@ class WhaleFlowDashboard {
 
         setTimeout(() => toast.remove(), 4000);
     }
+
+    // ==================== SYSTEM PANEL ====================
+
+    _setupSystemPanelToggle() {
+        const toggle = this.elements.systemPanelToggle;
+        if (toggle && !toggle._bound) {
+            toggle._bound = true;
+            toggle.addEventListener('click', () => {
+                const body = this.elements.systemPanelBody;
+                const arrow = this.elements.systemPanelArrow;
+                if (body) {
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : 'block';
+                    if (arrow) arrow.classList.toggle('open', !open);
+                }
+            });
+        }
+    }
+
+    updateSystemPanel() {
+        const s = this._serverSystemState;
+        if (!s) return;
+
+        // Uptime
+        const upEl = this.elements.sysUptime;
+        if (upEl) {
+            const sec = s.uptime_seconds + (Date.now() / 1000 - (s._loadedAt || Date.now() / 1000));
+            if (!s._loadedAt) s._loadedAt = Date.now() / 1000;
+            const h = Math.floor(sec / 3600);
+            const m = Math.floor((sec % 3600) / 60);
+            upEl.textContent = `${h}h ${m}m`;
+            upEl.className = 'sys-value mono ok';
+        }
+
+        // Backend
+        const beEl = this.elements.sysBackend;
+        if (beEl) {
+            const backendConnected = !!(s.connected || this.localWsActive);
+            beEl.textContent = backendConnected ? 'Connected' : 'Disconnected';
+            beEl.className = 'sys-value mono ' + (backendConnected ? 'ok' : 'err');
+        }
+
+        // Last funding
+        const lfEl = this.elements.sysLastFunding;
+        if (lfEl && s.last_funding_update > 0) {
+            const ago = Math.round(Date.now() / 1000 - s.last_funding_update);
+            lfEl.textContent = ago < 120 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
+            lfEl.className = 'sys-value mono ' + (ago < 30 ? 'ok' : ago < 60 ? 'warn' : 'err');
+        }
+
+        // Last trade
+        const ltEl = this.elements.sysLastTrade;
+        if (ltEl && s.last_trade_update > 0) {
+            const ago = Math.round(Date.now() / 1000 - s.last_trade_update);
+            ltEl.textContent = ago < 120 ? `${ago}s ago` : `${Math.round(ago / 60)}m ago`;
+            ltEl.className = 'sys-value mono ' + (ago < 10 ? 'ok' : ago < 30 ? 'warn' : 'err');
+        }
+
+        // Snapshot
+        const snEl = this.elements.sysSnapshot;
+        if (snEl) {
+            snEl.textContent = s.snapshot_loaded ? 'Loaded' : 'No';
+            snEl.className = 'sys-value mono ' + (s.snapshot_loaded ? 'ok' : 'warn');
+        }
+
+        // Exchange status dots
+        const now = Date.now() / 1000;
+        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB'].forEach(ex => {
+            const el = this.elements['exch' + ex];
+            if (!el) return;
+            const info = (s.exchange_status || {})[ex];
+            if (!info) return;
+
+            const ageEl = el.querySelector('.exch-age');
+            el.className = 'exch-item';
+
+            if (info.connected) {
+                const age = info.last_msg > 0 ? Math.round(now - info.last_msg) : -1;
+                if (age >= 0 && age < 60) {
+                    el.classList.add('connected');
+                    if (ageEl) ageEl.textContent = `${age}s`;
+                } else if (age >= 60) {
+                    el.classList.add('stale');
+                    if (ageEl) ageEl.textContent = `${Math.round(age / 60)}m`;
+                } else {
+                    el.classList.add('connected');
+                    if (ageEl) ageEl.textContent = '--';
+                }
+            } else {
+                el.classList.add('disconnected');
+                if (ageEl) ageEl.textContent = 'down';
+            }
+        });
+    }
+    // ==================== LOG SIDEBAR ====================
+
+    _setupLogSidebar() {
+        const tab = this.elements.logSidebarTab;
+        const closeBtn = this.elements.logCloseBtn;
+        const clearBtn = this.elements.logClearBtn;
+        const sidebar = this.elements.logSidebar;
+
+        if (tab && !tab._bound) {
+            tab._bound = true;
+            tab.addEventListener('click', () => {
+                this._logSidebarOpen = !this._logSidebarOpen;
+                if (sidebar) sidebar.classList.toggle('open', this._logSidebarOpen);
+            });
+        }
+
+        if (closeBtn && !closeBtn._bound) {
+            closeBtn._bound = true;
+            closeBtn.addEventListener('click', () => {
+                this._logSidebarOpen = false;
+                if (sidebar) sidebar.classList.remove('open');
+            });
+        }
+
+        if (clearBtn && !clearBtn._bound) {
+            clearBtn._bound = true;
+            clearBtn.addEventListener('click', () => {
+                this._logEntries = [];
+                this._renderLogSidebar();
+            });
+        }
+
+        // Collapse/expand group bodies
+        ['ERROR', 'WARNING', 'INFO', 'DEBUG'].forEach(level => {
+            const group = this.elements['logGroup' + level];
+            if (!group || group._bound) return;
+            group._bound = true;
+            const header = group.querySelector('.log-group-header');
+            const body = this.elements['logBody' + level];
+            if (header && body) {
+                header.addEventListener('click', () => {
+                    body.style.display = body.style.display === 'none' ? '' : 'none';
+                });
+            }
+        });
+    }
+
+    _renderLogSidebar() {
+        const levels = ['ERROR', 'WARNING', 'INFO', 'DEBUG'];
+        const grouped = { ERROR: [], WARNING: [], INFO: [], DEBUG: [] };
+
+        // Group entries
+        (this._logEntries || []).forEach(entry => {
+            const lvl = entry.level || 'INFO';
+            if (grouped[lvl]) {
+                grouped[lvl].push(entry);
+            } else {
+                grouped['INFO'].push(entry);
+            }
+        });
+
+        // Update badge
+        const badge = this.elements.logBadge;
+        if (badge) {
+            const total = this._logEntries ? this._logEntries.length : 0;
+            badge.textContent = total > 999 ? '999+' : String(total);
+            badge.className = 'log-tab-badge';
+            if (grouped.ERROR.length > 0) badge.classList.add('has-errors');
+            else if (grouped.WARNING.length > 0) badge.classList.add('has-warnings');
+        }
+
+        // Render each group
+        levels.forEach(level => {
+            const countEl = this.elements['logCount' + level];
+            const bodyEl = this.elements['logBody' + level];
+            const groupEl = this.elements['logGroup' + level];
+            const entries = grouped[level];
+
+            if (countEl) countEl.textContent = String(entries.length);
+            if (groupEl) groupEl.classList.toggle('empty', entries.length === 0);
+
+            if (bodyEl) {
+                if (entries.length === 0) {
+                    bodyEl.innerHTML = '<div class="log-empty-msg">No entries</div>';
+                } else {
+                    // Show newest first, cap at 100 per group
+                    const recent = entries.slice(-100).reverse();
+                    bodyEl.innerHTML = recent.map(e => {
+                        const time = e.timeShort || '';
+                        const msg = (e.msg || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        return `<div class="log-entry level-${level}"><span class="log-entry-time">${time}</span><span class="log-entry-msg">${msg}</span></div>`;
+                    }).join('');
+                }
+            }
+        });
+    }
 }
 
 // ==================== INITIALIZE ====================
 document.addEventListener('DOMContentLoaded', () => {
     window.dashboard = new WhaleFlowDashboard();
 });
+
+
+
+
+
+
+
+
+
+
+
+

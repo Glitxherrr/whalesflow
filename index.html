@@ -131,45 +131,69 @@
             </div>
         </div>
 
-        <!-- Funding Rate Card -->
-        <div class="summary-card funding-card" id="fundingCard">
+        <!-- Combined Funding + Market Card -->
+        <div class="summary-card funding-card market-combo-card" id="fundingCard">
             <div class="card-glow funding-glow"></div>
-            <div class="card-inner">
-                <div class="card-header">
-                    <span class="card-icon">💰</span>
-                    <span class="card-label">FUNDING RATE</span>
-                </div>
-                <div class="card-value mono" id="fundingRate">0.0000%</div>
-                <div class="funding-direction" id="fundingDirection">
-                    <span class="direction-badge neutral">Neutral</span>
-                </div>
-                <div class="absorption-status" id="absorptionStatus">
-                    <span class="absorption-badge">Waiting for data...</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Market Info Card -->
-        <div class="summary-card price-card">
-            <div class="card-glow price-glow"></div>
-            <div class="card-inner">
-                <div class="card-header">
-                    <span class="card-icon">💲</span>
-                    <span class="card-label">MARKET DATA</span>
-                </div>
-                <div class="card-value mono" id="markPrice">$0.00</div>
-                <div class="price-details">
-                    <div class="price-row">
-                        <span class="price-label">Oracle</span>
-                        <span class="price-val mono" id="oraclePrice">$0.00</span>
+            <div class="card-inner market-combo-grid">
+                <div class="combo-pane funding-pane">
+                    <div class="card-header">
+                        <span class="card-icon">$</span>
+                        <span class="card-label">FUNDING RATE</span>
                     </div>
-                    <div class="price-row">
+                    <div class="market-primary-block">
+                        <div class="funding-top-row">
+                            <div class="card-value mono" id="fundingRate">0.0000%</div>
+                            <div class="funding-direction" id="fundingDirection">
+                                <span class="direction-badge neutral">Neutral</span>
+                            </div>
+                        </div>
+                        <div class="change-badge-group funding-change-row">
+                            <div class="funding-hourly-change mono" id="fundingHourlyChange">>1h --</div>
+                            <div class="funding-hourly-change mono" id="fundingFourHourChange">>4h --</div>
+                            <div class="funding-hourly-change mono" id="fundingDailyChange">>24h --</div>
+                        </div>
+                    </div>
+                    <div class="price-row price-row-stack funding-oi-row">
                         <span class="price-label">Open Interest</span>
-                        <span class="price-val mono" id="openInterest">$0</span>
+                        <div class="price-stack">
+                            <span class="mini-hourly-change mono" id="openInterestHourlyChange">>1h --</span>
+                            <span class="mini-hourly-change mono" id="openInterestFourHourChange">>4h --</span>
+                            <span class="mini-hourly-change mono" id="openInterestDailyChange">>24h --</span>
+                            <span class="price-val mono" id="openInterest">$0</span>
+                        </div>
                     </div>
-                    <div class="price-row">
-                        <span class="price-label">24h Volume</span>
-                        <span class="price-val mono" id="dayVolume">$0</span>
+                </div>
+                <div class="combo-pane market-pane">
+                    <div class="card-header">
+                        <span class="card-icon">M</span>
+                        <span class="card-label">MARKET DATA</span>
+                    </div>
+                    <div class="market-primary-block market-primary-row">
+                        <div class="market-top-row">
+                            <div class="card-value mono" id="markPrice">$0.00</div>
+                            <div class="market-status-slot">
+                                <div class="absorption-status" id="absorptionStatus">
+                                    <span class="absorption-badge" style="display: none;"></span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="change-badge-group funding-change-row">
+                            <div class="funding-hourly-change mono" id="markPriceHourlyChange">>1h --</div>
+                            <div class="funding-hourly-change mono" id="markPriceFourHourChange">>4h --</div>
+                            <div class="funding-hourly-change mono" id="markPriceDailyChange">>24h --</div>
+                        </div>
+                    </div>
+                    <div class="market-hidden-meta" aria-hidden="true"><span class="price-val mono" id="oraclePrice">$0.00</span></div>
+                    <div class="price-details compact-price-details">
+                        <div class="price-row price-row-stack">
+                            <span class="price-label">24h Volume</span>
+                            <div class="price-stack">
+                                <span class="mini-hourly-change mono" id="dayVolumeHourlyChange">>1h --</span>
+                                <span class="mini-hourly-change mono" id="dayVolumeFourHourChange">>4h --</span>
+                                <span class="mini-hourly-change mono" id="dayVolumeDailyChange">>24h --</span>
+                                <span class="price-val mono" id="dayVolume">$0</span>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -492,6 +516,98 @@
         </div>
     </section>
 
+    <!-- System Status Panel -->
+    <section class="system-panel" id="systemPanel">
+        <div class="system-panel-header" id="systemPanelToggle">
+            <span class="system-panel-icon">🖥️</span>
+            <span class="system-panel-title">System Status</span>
+            <span class="system-panel-arrow" id="systemPanelArrow">▼</span>
+        </div>
+        <div class="system-panel-body" id="systemPanelBody" style="display:none;">
+            <div class="system-grid">
+                <div class="sys-item">
+                    <span class="sys-label">Collector Uptime</span>
+                    <span class="sys-value mono" id="sysUptime">--</span>
+                </div>
+                <div class="sys-item">
+                    <span class="sys-label">Backend</span>
+                    <span class="sys-value mono" id="sysBackend">--</span>
+                </div>
+                <div class="sys-item">
+                    <span class="sys-label">Last Funding</span>
+                    <span class="sys-value mono" id="sysLastFunding">--</span>
+                </div>
+                <div class="sys-item">
+                    <span class="sys-label">Last Trade</span>
+                    <span class="sys-value mono" id="sysLastTrade">--</span>
+                </div>
+                <div class="sys-item">
+                    <span class="sys-label">Snapshot</span>
+                    <span class="sys-value mono" id="sysSnapshot">--</span>
+                </div>
+            </div>
+            <div class="exchange-status-grid" id="exchangeStatusGrid">
+                <div class="exch-item" id="exchHL"><span class="exch-dot"></span> HL <span class="exch-age mono">--</span></div>
+                <div class="exch-item" id="exchBIN"><span class="exch-dot"></span> BIN <span class="exch-age mono">--</span></div>
+                <div class="exch-item" id="exchBYB"><span class="exch-dot"></span> BYB <span class="exch-age mono">--</span></div>
+                <div class="exch-item" id="exchOKX"><span class="exch-dot"></span> OKX <span class="exch-age mono">--</span></div>
+                <div class="exch-item" id="exchKRK"><span class="exch-dot"></span> KRK <span class="exch-age mono">--</span></div>
+                <div class="exch-item" id="exchCB"><span class="exch-dot"></span> CB <span class="exch-age mono">--</span></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Log Sidebar -->
+    <div class="log-sidebar" id="logSidebar">
+        <div class="log-sidebar-tab" id="logSidebarTab" title="System Logs">
+            <span class="log-tab-icon">📋</span>
+            <span class="log-tab-badge" id="logBadge">0</span>
+        </div>
+        <div class="log-sidebar-content" id="logSidebarContent">
+            <div class="log-sidebar-header">
+                <h3>📋 System Logs</h3>
+                <div class="log-header-actions">
+                    <button class="log-clear-btn" id="logClearBtn" title="Clear logs">🗑️</button>
+                    <button class="log-close-btn" id="logCloseBtn" title="Close">✕</button>
+                </div>
+            </div>
+            <div class="log-groups" id="logGroups">
+                <div class="log-group" id="logGroupERROR">
+                    <div class="log-group-header log-level-error">
+                        <span class="log-group-icon">🔴</span>
+                        <span class="log-group-title">Errors</span>
+                        <span class="log-group-count" id="logCountERROR">0</span>
+                    </div>
+                    <div class="log-group-body" id="logBodyERROR"></div>
+                </div>
+                <div class="log-group" id="logGroupWARNING">
+                    <div class="log-group-header log-level-warning">
+                        <span class="log-group-icon">🟡</span>
+                        <span class="log-group-title">Warnings</span>
+                        <span class="log-group-count" id="logCountWARNING">0</span>
+                    </div>
+                    <div class="log-group-body" id="logBodyWARNING"></div>
+                </div>
+                <div class="log-group" id="logGroupINFO">
+                    <div class="log-group-header log-level-info">
+                        <span class="log-group-icon">🔵</span>
+                        <span class="log-group-title">Info</span>
+                        <span class="log-group-count" id="logCountINFO">0</span>
+                    </div>
+                    <div class="log-group-body" id="logBodyINFO"></div>
+                </div>
+                <div class="log-group" id="logGroupDEBUG">
+                    <div class="log-group-header log-level-debug">
+                        <span class="log-group-icon">⚪</span>
+                        <span class="log-group-title">Debug</span>
+                        <span class="log-group-count" id="logCountDEBUG">0</span>
+                    </div>
+                    <div class="log-group-body" id="logBodyDEBUG"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Footer -->
     <footer class="footer">
         <div class="footer-content">
@@ -508,3 +624,5 @@
     <script src="app.js"></script>
 </body>
 </html>
+
+

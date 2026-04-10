@@ -1,7 +1,7 @@
-"""
-WhaleFlow Persistent Data Collector v2
+﻿"""
+WhaleFlow Persistent Data Collector v3
 8-Signal Reversal Radar + Mega Whale tracking + Funding Flip
-Runs as background daemon — collects continuously even when no user is viewing.
+Runs as background daemon â€” collects continuously even when no user is viewing.
 """
 
 import threading
@@ -10,8 +10,94 @@ import time
 import asyncio
 import requests
 import websockets
+import logging
+import logging.handlers
+import signal as _signal
+import atexit
+import os
 from collections import deque
 from datetime import datetime
+
+# ===== IN-MEMORY LOG HANDLER =====
+class MemoryLogHandler(logging.Handler):
+    """Stores last N log records in a deque for live UI display."""
+    def __init__(self, capacity=500):
+        super().__init__()
+        self.buffer = deque(maxlen=capacity)
+        self._broadcaster = None
+    def set_broadcaster(self, fn):
+        """Set callback: fn(entry_dict) â€” called on every log emit."""
+        self._broadcaster = fn
+    def emit(self, record):
+        entry = {
+            'time': self.format(record).split(' [')[0] if ' [' in self.format(record) else datetime.now().strftime('%H:%M:%S'),
+            'timeShort': datetime.fromtimestamp(record.created).strftime('%H:%M:%S'),
+            'level': record.levelname,
+            'msg': record.getMessage(),
+        }
+        self.buffer.append(entry)
+        if self._broadcaster:
+            try:
+                self._broadcaster(entry)
+            except Exception:
+                pass  # Never let broadcast errors break the logger
+    def get_entries(self):
+        return list(self.buffer)
+
+# ===== LOGGING SETUP =====
+os.makedirs('logs', exist_ok=True)
+logger = logging.getLogger('whaleflow')
+logger.setLevel(logging.INFO)
+_fh = logging.handlers.RotatingFileHandler(
+    'logs/collector.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
+)
+_fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+logger.addHandler(_fh)
+_ch = logging.StreamHandler()
+_ch.setFormatter(logging.Formatter('[%(levelname)s] %(message)s'))
+logger.addHandler(_ch)
+_mh = MemoryLogHandler(capacity=500)
+_mh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+logger.addHandler(_mh)
+
+# ===== CONFIGURATION =====
+CONFIG = {
+    'coins': ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'],
+    'whale_thresholds': {'BTC': 50000, 'ETH': 10000, 'SOL': 100, 'PAXG': 10, 'XRP': 50},
+    'mega_thresholds': {'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000, 'PAXG': 200000, 'XRP': 300000},
+    'ws_port': 8765,
+    'funding_poll_interval': 15,
+    'signal_eval_interval': 15,
+    'signal_initial_delay': 30,
+    'snapshot_interval': 300,
+    'snapshot_initial_delay': 300,
+    'pressure_interval': 30,
+    'signal_decay_initiative': 300,
+    'signal_decay_clustering': 180,
+    'clustering_window_ms': 60000,
+    'clustering_min_trades': 5,
+    'funding_extreme_threshold': 0.005,
+    'absorption_imbalance_min': 60,
+    'absorption_vol_min': 50000,
+    'absorption_price_delta_max': 0.02,
+    'absorption_oi_delta_min': 0.05,
+    'absorption_funding_threshold': 0.000005,
+    'cvd_price_threshold': 0.02,
+    'cvd_ratio': 0.4,
+    'oi_divergence_threshold': 0.05,
+    'volume_climax_ratio': 5.0,
+    'volume_climax_buy_high': 0.6,
+    'volume_climax_buy_low': 0.4,
+    'regime_hold_time': 900,
+    'regime_thresholds': {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.35, 'XRP': 0.30, 'PAXG': 0.08},
+    'snapshot_path': 'runtime/state_snapshot.json',
+    'max_trade_value': 500_000_000,
+    'trade_time_tolerance_ms': 300_000,
+    'dedupe_cache_size': 2000,
+    'funding_history_maxlen': 6000,
+    'market_history_maxlen': 6000,
+    'abs_snapshots_maxlen': 320,
+}
 
 
 class HyperliquidCollector:
@@ -31,21 +117,9 @@ class HyperliquidCollector:
         return cls._instance
 
     def __init__(self):
-        self.coins = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP']
-        # Coin-specific minimum thresholds for standard whales
-        self.whale_thresholds = {
-            'BTC': 50000,
-            'ETH': 10000,
-            'SOL': 100,
-            'PAXG': 10,
-            'XRP': 50
-        }
-
-        # Coin-specific mega thresholds for Aggressive Initiative
-        self.mega_thresholds = {
-            'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000,
-            'PAXG': 200000, 'XRP': 300000,
-        }
+        self.coins = CONFIG['coins']
+        self.whale_thresholds = CONFIG['whale_thresholds']
+        self.mega_thresholds = CONFIG['mega_thresholds']
 
         self.data = {}
         self._data_lock = threading.Lock()
@@ -53,15 +127,33 @@ class HyperliquidCollector:
         self.connected = False
         self.started_at = None
 
+        # Exchange health tracking
+        self.exchange_status = {
+            ex: {'connected': False, 'last_msg': 0, 'last_error': ''}
+            for ex in ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB']
+        }
+
+        # Freshness timestamps
+        self.last_funding_update = 0
+        self.last_trade_update = 0
+        self.snapshot_loaded = False
+
+        # Trade deduplication
+        self._dedupe_lock = threading.Lock()
+        self._dedupe_set = set()
+        self._dedupe_queue = deque()
+
         self.local_clients = set()
         self.local_loop = None
 
         for coin in self.coins:
             self.data[coin] = self._new_coin_data()
 
+        # Load previous snapshot
+        self._load_snapshot()
+
     def _new_coin_data(self):
         return {
-            # Whale trades
             'whale_trades': deque(maxlen=500),
             'total_buy_vol': 0.0,
             'total_sell_vol': 0.0,
@@ -71,40 +163,29 @@ class HyperliquidCollector:
             'current_sell_vol': 0.0,
             'current_buy_count': 0,
             'current_sell_count': 0,
-            'whale_buckets': deque(maxlen=1440), # up to 24h of 1-minute buckets
-
-
-            # Mega whales (initiative + clustering events)
+            'whale_buckets': deque(maxlen=1440),
             'mega_whales': deque(maxlen=100),
-
-            # Absorption accumulator
             'abs_cum_buy': 0.0,
             'abs_cum_sell': 0.0,
-            'abs_snapshots': deque(maxlen=12),
+            'abs_snapshots': deque(maxlen=CONFIG['abs_snapshots_maxlen']),
             'abs_detected': False,
             'abs_side': None,
             'abs_conditions': {'flow': False, 'reversal': False, 'oi': False, 'funding': False},
             'abs_conditions_met': 0,
             'abs_metrics': {'cvd': 0, 'vol': 0, 'price_delta': 0, 'oi_delta': 0, 'imbalance': 50, 'funding': 0},
-
-            # Market data
             'last_trade_price': 0.0,
             'funding': 0.0,
+            'funding_history': deque(maxlen=CONFIG['funding_history_maxlen']),
+            'market_history': deque(maxlen=CONFIG['market_history_maxlen']),
             'mark_px': 0.0,
             'oracle_px': 0.0,
             'open_interest': 0.0,
             'day_volume': 0.0,
-
-            # Pressure history
             'pressure_history': deque(maxlen=30),
             'last_pressure_snap': {'buys': 0.0, 'sells': 0.0},
-
-            # Volume buckets (5-min) for climax detection
             'volume_buckets': deque(maxlen=12),
             'current_bucket_buy': 0.0,
             'current_bucket_sell': 0.0,
-
-            # 8-Signal Reversal Radar
             'signals': {
                 'absorption':   {'active': False, 'side': None, 'detail': ''},
                 'cvd_divergence': {'active': False, 'side': None, 'detail': ''},
@@ -116,14 +197,12 @@ class HyperliquidCollector:
             },
             'alert_level': 0,
             'alert_label': 'Quiet',
-
-            # Market Regime detector (persistent)
             'regime': {
                 'score': 50,
                 'label': 'ANALYZING\u2026',
                 'css_class': '',
                 'last_change_time': 0,
-                'price_history': [],     # [{time, price}] last 60 min
+                'price_history': [],
                 'range_score': 0,
                 'volume_score': 0,
                 'cvd_score': 0,
@@ -139,6 +218,14 @@ class HyperliquidCollector:
         self.running = True
         self.started_at = time.time()
 
+        # Graceful shutdown handlers (signal only works from main thread)
+        try:
+            _signal.signal(_signal.SIGINT, lambda s, f: self.shutdown())
+            _signal.signal(_signal.SIGTERM, lambda s, f: self.shutdown())
+        except (ValueError, OSError, AttributeError):
+            pass  # Running in Streamlit worker thread â€” atexit still works
+        atexit.register(self.shutdown)
+
         threading.Thread(target=self._run_ws, daemon=True, name='ws').start()
         threading.Thread(target=self._run_ws_binance, daemon=True, name='ws_binance').start()
         threading.Thread(target=self._run_ws_bybit, daemon=True, name='ws_bybit').start()
@@ -151,9 +238,118 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_pressure, daemon=True, name='pressure').start()
         threading.Thread(target=self._run_local_server, daemon=True, name='local_ws').start()
 
-        print(f"[Collector] Started at {datetime.now().isoformat()}")
+        # Wire live log broadcasting through the local WS
+        def _broadcast_log(entry):
+            if self.local_loop and self.local_clients:
+                msg = json.dumps({'channel': 'log', 'data': entry})
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_local(msg), self.local_loop
+                )
+        _mh.set_broadcaster(_broadcast_log)
 
-    # ==================== WEBSOCKET ====================
+        logger.info(f"Collector started at {datetime.now().isoformat()}")
+
+    def shutdown(self):
+        if not self.running:
+            return
+        logger.info("Shutting down collector...")
+        self.running = False
+        self._save_snapshot()
+        logger.info("Collector shutdown complete.")
+
+    # ==================== SNAPSHOT PERSISTENCE ====================
+
+    def _save_snapshot(self):
+        try:
+            state = self.get_state()
+            snap_dir = os.path.dirname(CONFIG['snapshot_path'])
+            if snap_dir:
+                os.makedirs(snap_dir, exist_ok=True)
+            tmp_path = CONFIG['snapshot_path'] + '.tmp'
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(state, f)
+            os.replace(tmp_path, CONFIG['snapshot_path'])
+            logger.info(f"Snapshot saved to {CONFIG['snapshot_path']}")
+        except Exception:
+            logger.exception("Failed to save snapshot")
+
+    def _load_snapshot(self):
+        path = CONFIG['snapshot_path']
+        if not os.path.exists(path):
+            logger.info("No snapshot found, starting fresh")
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            if not state or 'coins' not in state:
+                logger.warning("Snapshot file is empty or invalid")
+                return
+
+            with self._data_lock:
+                for coin in self.coins:
+                    sc = state['coins'].get(coin)
+                    if not sc:
+                        continue
+                    d = self.data[coin]
+
+                    for key in ['total_buy_vol', 'total_sell_vol', 'buy_count', 'sell_count',
+                                'current_buy_vol', 'current_sell_vol', 'current_buy_count', 'current_sell_count',
+                                'funding', 'mark_px', 'oracle_px', 'open_interest', 'day_volume', 'last_trade_price']:
+                        if key in sc:
+                            d[key] = sc[key]
+
+                    if sc.get('whale_trades'):
+                        d['whale_trades'] = deque(sc['whale_trades'][:500], maxlen=500)
+                    if sc.get('mega_whales'):
+                        d['mega_whales'] = deque(sc['mega_whales'][:100], maxlen=100)
+                    if sc.get('whale_buckets'):
+                        d['whale_buckets'] = deque(sc['whale_buckets'][-1440:], maxlen=1440)
+                    if sc.get('pressure_history'):
+                        d['pressure_history'] = deque(sc['pressure_history'][-30:], maxlen=30)
+                    if sc.get('volume_buckets'):
+                        d['volume_buckets'] = deque(sc['volume_buckets'][-12:], maxlen=12)
+                    if sc.get('funding_history'):
+                        d['funding_history'] = deque(
+                            sc['funding_history'][-CONFIG['funding_history_maxlen']:],
+                            maxlen=CONFIG['funding_history_maxlen']
+                        )
+                    if sc.get('market_history'):
+                        d['market_history'] = deque(
+                            sc['market_history'][-CONFIG['market_history_maxlen']:],
+                            maxlen=CONFIG['market_history_maxlen']
+                        )
+
+                    if sc.get('abs'):
+                        sa = sc['abs']
+                        d['abs_cum_buy'] = sa.get('cum_buy', 0.0)
+                        d['abs_cum_sell'] = sa.get('cum_sell', 0.0)
+                        d['abs_detected'] = sa.get('detected', False)
+                        d['abs_side'] = sa.get('side')
+                        d['abs_conditions'] = sa.get('conditions', d['abs_conditions'])
+                        d['abs_conditions_met'] = sa.get('conditions_met', 0)
+                        d['abs_metrics'] = sa.get('metrics', d['abs_metrics'])
+                        if sa.get('snapshots'):
+                            d['abs_snapshots'] = deque(
+                                sa['snapshots'][-CONFIG['abs_snapshots_maxlen']:],
+                                maxlen=CONFIG['abs_snapshots_maxlen']
+                            )
+
+                    if sc.get('signals'):
+                        d['signals'] = sc['signals']
+                    d['alert_level'] = sc.get('alert_level', 0)
+                    d['alert_label'] = sc.get('alert_label', 'Quiet')
+
+                    if sc.get('regime'):
+                        d['regime'] = sc['regime']
+
+                    d['last_pressure_snap'] = {'buys': d['total_buy_vol'], 'sells': d['total_sell_vol']}
+
+            self.snapshot_loaded = True
+            logger.info(f"Snapshot loaded from {path}")
+        except Exception:
+            logger.exception(f"Failed to load snapshot from {path}")
+
+    # ==================== WEBSOCKET - Hyperliquid ====================
 
     def _run_ws(self):
         loop = asyncio.new_event_loop()
@@ -162,14 +358,17 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop())
             except Exception as e:
-                print(f"[WS] Error: {e}")
+                logger.error(f"WS HL connection error: {e}")
                 self.connected = False
+                self.exchange_status['HL']['connected'] = False
+                self.exchange_status['HL']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop(self):
         async with websockets.connect('wss://api.hyperliquid.xyz/ws', ping_interval=20, ping_timeout=10) as ws:
             self.connected = True
-            print("[WS] Connected")
+            self.exchange_status['HL']['connected'] = True
+            logger.info("WS HL connected")
 
             for coin in self.coins:
                 await ws.send(json.dumps({
@@ -181,14 +380,16 @@ class HyperliquidCollector:
                 try:
                     msg = json.loads(raw)
                     if msg.get('channel') == 'trades' and 'data' in msg:
-                        # Append exchange flag to HL trades
                         hw_trades = []
                         for t in msg['data']:
                             t['exchange'] = 'HL'
                             hw_trades.append(t)
                         self._process_trades(hw_trades)
+                        self.exchange_status['HL']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS HL parse error", exc_info=True)
+
+    # ==================== WEBSOCKET - Binance ====================
 
     def _run_ws_binance(self):
         loop = asyncio.new_event_loop()
@@ -197,14 +398,17 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_binance())
             except Exception as e:
-                print(f"[WS Binance] Error: {e}")
+                logger.error(f"WS Binance connection error: {e}")
+                self.exchange_status['BIN']['connected'] = False
+                self.exchange_status['BIN']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop_binance(self):
         streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
         url = f"wss://stream.binance.com:9443/stream?streams={streams}"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            print("[WS Binance] Connected")
+            self.exchange_status['BIN']['connected'] = True
+            logger.info("WS Binance connected")
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
@@ -214,18 +418,17 @@ class HyperliquidCollector:
                         coin = symbol.replace('USDT', '')
                         if coin not in self.coins:
                             continue
-                        
                         mapped_trade = {
-                            'coin': coin,
-                            'px': data['p'],
-                            'sz': data['q'],
+                            'coin': coin, 'px': data['p'], 'sz': data['q'],
                             'side': 'S' if data['m'] else 'B',
-                            'time': data['T'],
-                            'exchange': 'BIN'
+                            'time': data['T'], 'exchange': 'BIN'
                         }
                         self._process_trades([mapped_trade])
+                        self.exchange_status['BIN']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS Binance parse error", exc_info=True)
+
+    # ==================== WEBSOCKET - Bybit ====================
 
     def _run_ws_bybit(self):
         loop = asyncio.new_event_loop()
@@ -234,13 +437,16 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_bybit())
             except Exception as e:
-                print(f"[WS Bybit] Error: {e}")
+                logger.error(f"WS Bybit connection error: {e}")
+                self.exchange_status['BYB']['connected'] = False
+                self.exchange_status['BYB']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop_bybit(self):
         url = "wss://stream.bybit.com/v5/public/linear"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            print("[WS Bybit] Connected")
+            self.exchange_status['BYB']['connected'] = True
+            logger.info("WS Bybit connected")
             args = [f"publicTrade.{coin}USDT" for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
             async for raw in ws:
@@ -252,17 +458,17 @@ class HyperliquidCollector:
                             coin = msg['topic'].split('.')[1].replace('USDT', '')
                             if coin in self.coins:
                                 parsed_trades.append({
-                                    'coin': coin,
-                                    'px': float(t['p']),
-                                    'sz': float(t['v']),
+                                    'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
                                     'side': 'B' if t['S'] == 'Buy' else 'S',
-                                    'time': int(t['T']),
-                                    'exchange': 'BYB'
+                                    'time': int(t['T']), 'exchange': 'BYB'
                                 })
                         if parsed_trades:
                             self._process_trades(parsed_trades)
+                            self.exchange_status['BYB']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS Bybit parse error", exc_info=True)
+
+    # ==================== WEBSOCKET - OKX ====================
 
     def _run_ws_okx(self):
         loop = asyncio.new_event_loop()
@@ -271,13 +477,16 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_okx())
             except Exception as e:
-                print(f"[WS OKX] Error: {e}")
+                logger.error(f"WS OKX connection error: {e}")
+                self.exchange_status['OKX']['connected'] = False
+                self.exchange_status['OKX']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop_okx(self):
         url = "wss://ws.okx.com:8443/ws/v5/public"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            print("[WS OKX] Connected")
+            self.exchange_status['OKX']['connected'] = True
+            logger.info("WS OKX connected")
             args = [{"channel": "trades", "instId": f"{coin}-USDT-SWAP"} for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
             async for raw in ws:
@@ -289,18 +498,17 @@ class HyperliquidCollector:
                             coin = t['instId'].split('-')[0]
                             if coin in self.coins:
                                 parsed_trades.append({
-                                    'coin': coin,
-                                    'px': float(t['px']),
-                                    'sz': float(t['sz']),
+                                    'coin': coin, 'px': float(t['px']), 'sz': float(t['sz']),
                                     'side': 'B' if t['side'] == 'buy' else 'S',
-                                    'time': int(t['ts']),
-                                    'exchange': 'OKX'
+                                    'time': int(t['ts']), 'exchange': 'OKX'
                                 })
                         if parsed_trades:
                             self._process_trades(parsed_trades)
+                            self.exchange_status['OKX']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS OKX parse error", exc_info=True)
 
+    # ==================== WEBSOCKET - Kraken ====================
 
     def _run_ws_kraken(self):
         loop = asyncio.new_event_loop()
@@ -309,20 +517,20 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_kraken())
             except Exception as e:
-                print(f"[WS Kraken] Error: {e}")
+                logger.error(f"WS Kraken connection error: {e}")
+                self.exchange_status['KRK']['connected'] = False
+                self.exchange_status['KRK']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop_kraken(self):
         url = "wss://ws.kraken.com/v2"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            print("[WS Kraken] Connected")
+            self.exchange_status['KRK']['connected'] = True
+            logger.info("WS Kraken connected")
             args = [f"{coin}/USD" for coin in self.coins]
             await ws.send(json.dumps({
                 "method": "subscribe",
-                "params": {
-                    "channel": "trade",
-                    "symbol": args
-                }
+                "params": {"channel": "trade", "symbol": args}
             }))
             async for raw in ws:
                 try:
@@ -334,17 +542,17 @@ class HyperliquidCollector:
                             if coin in self.coins:
                                 dtime = datetime.fromisoformat(t['timestamp'].replace('Z', '+00:00'))
                                 parsed_trades.append({
-                                    'coin': coin,
-                                    'px': float(t['price']),
-                                    'sz': float(t['qty']),
+                                    'coin': coin, 'px': float(t['price']), 'sz': float(t['qty']),
                                     'side': 'B' if t['side'] == 'buy' else 'S',
-                                    'time': int(dtime.timestamp() * 1000),
-                                    'exchange': 'KRK'
+                                    'time': int(dtime.timestamp() * 1000), 'exchange': 'KRK'
                                 })
                         if parsed_trades:
                             self._process_trades(parsed_trades)
+                            self.exchange_status['KRK']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS Kraken parse error", exc_info=True)
+
+    # ==================== WEBSOCKET - Coinbase ====================
 
     def _run_ws_coinbase(self):
         loop = asyncio.new_event_loop()
@@ -353,18 +561,19 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_coinbase())
             except Exception as e:
-                print(f"[WS Coinbase] Error: {e}")
+                logger.error(f"WS Coinbase connection error: {e}")
+                self.exchange_status['CB']['connected'] = False
+                self.exchange_status['CB']['last_error'] = str(e)
                 time.sleep(5)
 
     async def _ws_loop_coinbase(self):
         url = "wss://ws-feed.exchange.coinbase.com"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            print("[WS Coinbase] Connected")
+            self.exchange_status['CB']['connected'] = True
+            logger.info("WS Coinbase connected")
             args = [f"{coin}-USD" for coin in self.coins]
             await ws.send(json.dumps({
-                "type": "subscribe",
-                "product_ids": args,
-                "channels": ["matches"]
+                "type": "subscribe", "product_ids": args, "channels": ["matches"]
             }))
             async for raw in ws:
                 try:
@@ -374,33 +583,71 @@ class HyperliquidCollector:
                         if coin in self.coins:
                             dtime = datetime.fromisoformat(msg['time'].replace('Z', '+00:00'))
                             parsed_trade = {
-                                'coin': coin,
-                                'px': float(msg['price']),
-                                'sz': float(msg['size']),
+                                'coin': coin, 'px': float(msg['price']), 'sz': float(msg['size']),
                                 'side': 'B' if msg['side'] == 'buy' else 'S',
-                                'time': int(dtime.timestamp() * 1000),
-                                'exchange': 'CB'
+                                'time': int(dtime.timestamp() * 1000), 'exchange': 'CB'
                             }
                             self._process_trades([parsed_trade])
+                            self.exchange_status['CB']['last_msg'] = time.time()
                 except Exception:
-                    pass
+                    logger.warning("WS Coinbase parse error", exc_info=True)
 
     # ==================== TRADE PROCESSING ====================
 
     def _process_trades(self, trades):
-        # Broadcast to local websocket clients First
+        now_ms = int(time.time() * 1000)
+        valid_trades = []
+
+        for trade in trades:
+            # --- Validation ---
+            try:
+                price = float(trade['px'])
+                size = float(trade['sz'])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if price <= 0 or size <= 0:
+                continue
+            value = price * size
+            if value > CONFIG['max_trade_value']:
+                logger.warning(f"Skipping large trade: ${value:,.0f} on {trade.get('coin', '?')}")
+                continue
+            trade_time = trade.get('time', now_ms)
+            if isinstance(trade_time, str):
+                trade_time = int(trade_time)
+            if abs(trade_time - now_ms) > CONFIG['trade_time_tolerance_ms']:
+                trade_time = now_ms
+            trade['time'] = trade_time
+
+            # --- Deduplication ---
+            exchange = trade.get('exchange', 'HL')
+            coin = trade.get('coin', 'BTC')
+            trade_key = (exchange, coin, trade_time, price, size, trade['side'])
+            with self._dedupe_lock:
+                if trade_key in self._dedupe_set:
+                    continue
+                self._dedupe_set.add(trade_key)
+                self._dedupe_queue.append(trade_key)
+                while len(self._dedupe_queue) > CONFIG['dedupe_cache_size']:
+                    old = self._dedupe_queue.popleft()
+                    self._dedupe_set.discard(old)
+
+            valid_trades.append(trade)
+
+        if not valid_trades:
+            return
+
+        # Broadcast validated trades to local WS clients
         if self.local_loop and self.local_clients:
-            formatted = {
-                'channel': 'trades',
-                'data': trades
-            }
+            formatted = {'channel': 'trades', 'data': valid_trades}
             msg_str = json.dumps(formatted)
             asyncio.run_coroutine_threadsafe(
                 self._broadcast_local(msg_str), self.local_loop
             )
 
+        self.last_trade_update = time.time()
+
         with self._data_lock:
-            for trade in trades:
+            for trade in valid_trades:
                 coin = trade.get('coin', 'BTC')
                 if coin not in self.data:
                     continue
@@ -409,7 +656,7 @@ class HyperliquidCollector:
                 size = float(trade['sz'])
                 value = price * size
                 is_buy = trade['side'] == 'B'
-                trade_time = trade.get('time', int(time.time() * 1000))
+                trade_time = trade.get('time', now_ms)
                 exchange = trade.get('exchange', 'HL')
 
                 d = self.data[coin]
@@ -427,17 +674,16 @@ class HyperliquidCollector:
                 coin_threshold = self.whale_thresholds.get(coin, 50000)
                 if value >= coin_threshold:
                     # Timeframe Bucketing (1-minute resolution)
-                    # Use server time if trade_time is missing or wildly wrong
                     minute_ts = (trade_time // 60000) * 60000
-                    
+
                     if not d['whale_buckets']:
                         d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
-                    
+
                     latest_bucket = d['whale_buckets'][-1]
                     if minute_ts > latest_bucket['time']:
                         d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
                         latest_bucket = d['whale_buckets'][-1]
-                    
+
                     if minute_ts == latest_bucket['time']:
                         if is_buy:
                             latest_bucket['buy'] += value
@@ -460,7 +706,6 @@ class HyperliquidCollector:
                             'detail': f"{'BUY' if is_buy else 'SELL'} ${value/1e6:.2f}M @ {price:,.1f}",
                             'time': time.time(),
                         }
-                        # Add to mega whales
                         d['mega_whales'].appendleft({
                             'time': trade_time, 'side': 'BUY' if is_buy else 'SELL',
                             'price': price, 'size': size, 'value': value,
@@ -485,17 +730,17 @@ class HyperliquidCollector:
                         d['current_sell_vol'] += value
                         d['current_sell_count'] += 1
 
-                    # Check Whale Clustering
                     self._check_clustering(coin)
 
     def _check_clustering(self, coin):
         """5+ same-side whale trades within 60 seconds = clustering."""
         d = self.data[coin]
         now_ms = time.time() * 1000
-        cutoff = now_ms - 60000
+        cutoff = now_ms - CONFIG['clustering_window_ms']
+        min_trades = CONFIG['clustering_min_trades']
 
         recent = [t for t in list(d['whale_trades'])[:30] if t['time'] >= cutoff]
-        if len(recent) < 5:
+        if len(recent) < min_trades:
             return
 
         buys = [t for t in recent if t['side'] == 'BUY']
@@ -503,10 +748,10 @@ class HyperliquidCollector:
 
         cluster_side = None
         cluster_trades = []
-        if len(buys) >= 5:
+        if len(buys) >= min_trades:
             cluster_side = 'bullish'
             cluster_trades = buys
-        elif len(sells) >= 5:
+        elif len(sells) >= min_trades:
             cluster_side = 'bearish'
             cluster_trades = sells
 
@@ -519,17 +764,14 @@ class HyperliquidCollector:
                 'detail': f"{count} {side_str} trades (${total_val/1e6:.2f}M) in 60s",
                 'time': time.time(),
             }
-            # Avoid duplicate mega entries for same cluster burst
             last_mega = d['mega_whales'][0] if d['mega_whales'] else None
-            if not last_mega or last_mega.get('mega_type') != 'clustering' or (time.time() * 1000 - last_mega.get('time', 0)) > 60000:
+            if not last_mega or last_mega.get('mega_type') != 'clustering' or (time.time() * 1000 - last_mega.get('time', 0)) > CONFIG['clustering_window_ms']:
                 d['mega_whales'].appendleft({
-                    'time': int(time.time() * 1000),
-                    'side': side_str,
+                    'time': int(time.time() * 1000), 'side': side_str,
                     'price': cluster_trades[0]['price'],
                     'size': sum(t['size'] for t in cluster_trades),
                     'value': total_val, 'coin': coin,
-                    'mega_type': 'clustering', 'cluster_count': count,
-                    'exchange': 'MIX'
+                    'mega_type': 'clustering', 'cluster_count': count, 'exchange': 'MIX'
                 })
 
     # ==================== FUNDING / OI POLLER ====================
@@ -539,8 +781,8 @@ class HyperliquidCollector:
             try:
                 self._fetch_funding()
             except Exception as e:
-                print(f"[Funding] Error: {e}")
-            time.sleep(15)
+                logger.error(f"Funding poll error: {e}")
+            time.sleep(CONFIG['funding_poll_interval'])
 
     def _fetch_funding(self):
         r = requests.post('https://api.hyperliquid.xyz/info',
@@ -561,31 +803,53 @@ class HyperliquidCollector:
                 d['oracle_px'] = float(ctx.get('oraclePx', '0'))
                 d['open_interest'] = float(ctx.get('openInterest', '0'))
                 d['day_volume'] = float(ctx.get('dayNtlVlm', '0'))
-
-                # --- Market Regime evaluation ---
+                d['funding_history'].append({'time': time.time(), 'funding': d['funding']})
+                d['market_history'].append({
+                    'time': time.time(),
+                    'mark_px': d['mark_px'],
+                    'open_interest': d['open_interest'] * d['mark_px'],
+                    'day_volume': d['day_volume'],
+                })
                 self._evaluate_regime(coin, d)
+        self.last_funding_update = time.time()
+
+        if self.local_loop and self.local_clients:
+            funding_payload = {
+                'channel': 'funding',
+                'data': {
+                    'timestamp': self.last_funding_update,
+                    'coins': {
+                        coin: {
+                            'funding': self.data[coin]['funding'],
+                            'open_interest': self.data[coin]['open_interest'],
+                            'mark_px': self.data[coin]['mark_px'],
+                            'oracle_px': self.data[coin]['oracle_px'],
+                            'day_volume': self.data[coin]['day_volume'],
+                        } for coin in self.coins
+                    }
+                }
+            }
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_local(json.dumps(funding_payload)), self.local_loop
+            )
 
     # ==================== MARKET REGIME EVALUATOR ====================
 
     def _evaluate_regime(self, coin, d):
-        """Evaluate market regime (trending/choppy/sideways) for a coin."""
-        import time as _t
         rg = d['regime']
-        now = _t.time()
+        now = time.time()
         mark_px = d.get('mark_px', 0)
         if mark_px <= 0:
             return
 
-        # Track price every poll (~15s)
         rg['price_history'].append({'time': now, 'price': mark_px})
-        # Keep last 60 min
         cutoff = now - 3600
         rg['price_history'] = [p for p in rg['price_history'] if p['time'] > cutoff]
 
         if len(rg['price_history']) < 2:
             return
 
-        # --- Factor 1: Price Range (0-40 pts) ---
+        # Factor 1: Price Range (0-40 pts)
         thirty_min_ago = now - 1800
         recent_prices = [p['price'] for p in rg['price_history'] if p['time'] > thirty_min_ago]
         if not recent_prices:
@@ -594,8 +858,7 @@ class HyperliquidCollector:
         max_px = max(recent_prices)
         range_pct = ((max_px - min_px) / min_px * 100) if min_px > 0 else 0
 
-        thresholds = {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.35, 'XRP': 0.30, 'PAXG': 0.08}
-        flat_range = thresholds.get(coin, 0.20)
+        flat_range = CONFIG['regime_thresholds'].get(coin, 0.20)
         trend_range = flat_range * 2
         if range_pct >= trend_range:
             range_score = 40
@@ -605,7 +868,7 @@ class HyperliquidCollector:
             range_score = round((range_pct / flat_range) * 15) if flat_range > 0 else 0
         rg['range_score'] = range_score
 
-        # --- Factor 2: Volume vs Average (0-30 pts) ---
+        # Factor 2: Volume vs Average (0-30 pts)
         buckets = list(d.get('volume_buckets', []))
         volume_score = 15
         if len(buckets) >= 3:
@@ -623,10 +886,10 @@ class HyperliquidCollector:
                     volume_score = 0
         rg['volume_score'] = volume_score
 
-        # --- Factor 3: CVD direction (0-15 pts) ---
+        # Factor 3: CVD direction (0-15 pts)
         cvd_score = 7
-        total_buy = d.get('total_buy_vol', 0)   # correct key
-        total_sell = d.get('total_sell_vol', 0)  # correct key
+        total_buy = d.get('total_buy_vol', 0)
+        total_sell = d.get('total_sell_vol', 0)
         if total_buy + total_sell > 0:
             cvd = total_buy - total_sell
             total_vol = total_buy + total_sell
@@ -636,10 +899,10 @@ class HyperliquidCollector:
             elif cvd_ratio >= 0.05:
                 cvd_score = round(7 + (cvd_ratio - 0.05) / 0.10 * 8)
             else:
-                cvd_score = round(cvd_ratio / 0.05 * 7) if 0.05 > 0 else 0
+                cvd_score = round(cvd_ratio / 0.05 * 7)
         rg['cvd_score'] = cvd_score
 
-        # --- Factor 4: Buy/Sell Balance (0-15 pts) ---
+        # Factor 4: Buy/Sell Balance (0-15 pts)
         balance_score = 7
         ph = list(d.get('pressure_history', []))
         if len(ph) >= 3:
@@ -655,15 +918,15 @@ class HyperliquidCollector:
                 elif imbalance >= 0.1:
                     balance_score = round(7 + (imbalance - 0.1) / 0.2 * 8)
                 else:
-                    balance_score = round(imbalance / 0.1 * 7) if 0.1 > 0 else 0
+                    balance_score = round(imbalance / 0.1 * 7)
         rg['balance_score'] = balance_score
 
-        # --- Final Score ---
+        # Final Score
         raw_score = range_score + volume_score + cvd_score + balance_score
 
-        # --- Hysteresis + Hold Time ---
+        # Hysteresis + Hold Time
         current_label = rg['label']
-        hold_min = 900  # 15 min
+        hold_min = CONFIG['regime_hold_time']
         time_since = now - rg['last_change_time']
         can_change = rg['last_change_time'] == 0 or time_since >= hold_min
 
@@ -686,20 +949,20 @@ class HyperliquidCollector:
                 rg['css_class'] = new_class
                 rg['last_change_time'] = now
 
-        # EMA smoothing
         rg['score'] = round(rg['score'] * 0.7 + raw_score * 0.3)
 
     # ==================== SNAPSHOT ENGINE (5 min) ====================
 
     def _run_snapshots(self):
-        time.sleep(300)  # Wait 5 min
+        time.sleep(CONFIG['snapshot_initial_delay'])
         while self.running:
             try:
                 self._take_snapshot()
                 self._evaluate_absorption()
+                self._save_snapshot()
             except Exception as e:
-                print(f"[Snapshot] Error: {e}")
-            time.sleep(300)
+                logger.error(f"Snapshot error: {e}")
+            time.sleep(CONFIG['snapshot_interval'])
 
     def _take_snapshot(self):
         now = time.time()
@@ -714,8 +977,6 @@ class HyperliquidCollector:
                     'oi': d['open_interest'] * d['mark_px'],
                     'funding': d['funding'],
                 })
-
-                # Save volume bucket
                 d['volume_buckets'].append({
                     'buy': d['current_bucket_buy'],
                     'sell': d['current_bucket_sell'],
@@ -724,7 +985,7 @@ class HyperliquidCollector:
                 d['current_bucket_buy'] = 0.0
                 d['current_bucket_sell'] = 0.0
 
-        print(f"[Snapshot] Taken at {datetime.now().strftime('%H:%M:%S')}")
+        logger.info(f"Snapshot taken at {datetime.now().strftime('%H:%M:%S')}")
 
     def _evaluate_absorption(self):
         with self._data_lock:
@@ -762,17 +1023,19 @@ class HyperliquidCollector:
                     'oi_delta': oi_delta, 'imbalance': imbalance, 'funding': funding * 100,
                 }
 
-                c1 = imbalance >= 60 and total_vol > 50000
+                c1 = imbalance >= CONFIG['absorption_imbalance_min'] and total_vol > CONFIG['absorption_vol_min']
                 c2 = False
                 if c1:
-                    c2 = (flow_is_buy and price_delta <= 0.02) or (not flow_is_buy and price_delta >= -0.02)
-                c3 = oi_delta > 0.05
-                c4 = (flow_is_buy and funding > 0.000005) or (not flow_is_buy and funding < -0.000005)
+                    pdt = CONFIG['absorption_price_delta_max']
+                    c2 = (flow_is_buy and price_delta <= pdt) or (not flow_is_buy and price_delta >= -pdt)
+                c3 = oi_delta > CONFIG['absorption_oi_delta_min']
+                ft = CONFIG['absorption_funding_threshold']
+                c4 = (flow_is_buy and funding > ft) or (not flow_is_buy and funding < -ft)
 
                 d['abs_conditions'] = {'flow': c1, 'reversal': c2, 'oi': c3, 'funding': c4}
                 met = sum([c1, c2, c3, c4])
                 d['abs_conditions_met'] = met
-                d['abs_detected'] = (c1 and c2 and c3)  # Core 3 required, C4 funding is bonus
+                d['abs_detected'] = (c1 and c2 and c3)
                 d['abs_side'] = ('bearish' if flow_is_buy else 'bullish') if d['abs_detected'] else None
 
                 d['signals']['absorption'] = {
@@ -784,13 +1047,13 @@ class HyperliquidCollector:
     # ==================== SIGNAL EVALUATOR (15s) ====================
 
     def _run_signals(self):
-        time.sleep(30)  # Wait for some data
+        time.sleep(CONFIG['signal_initial_delay'])
         while self.running:
             try:
                 self._evaluate_all_signals()
             except Exception as e:
-                print(f"[Signals] Error: {e}")
-            time.sleep(15)
+                logger.error(f"Signal eval error: {e}")
+            time.sleep(CONFIG['signal_eval_interval'])
 
     def _evaluate_all_signals(self):
         now = time.time()
@@ -799,38 +1062,26 @@ class HyperliquidCollector:
                 d = self.data[coin]
                 sigs = d['signals']
 
-                # 1. Absorption — already evaluated in _evaluate_absorption
                 s_abs = sigs['absorption']['active']
-
-                # 2. CVD Divergence
                 s_cvd = self._check_cvd_divergence(coin)
-
-                # 3. OI + Price Divergence
                 s_oi = self._check_oi_divergence(coin)
-
-                # 4. Volume Climax
                 s_climax = self._check_volume_climax(coin)
-
-                # 5. Funding Extreme
                 s_fund = self._check_funding_extreme(coin)
 
-                # 6. Aggressive Initiative (decays after 5 min)
                 s_init = False
                 if sigs['initiative']['time'] > 0:
-                    if now - sigs['initiative']['time'] < 300:
+                    if now - sigs['initiative']['time'] < CONFIG['signal_decay_initiative']:
                         s_init = True
                     else:
                         sigs['initiative'] = {'active': False, 'side': None, 'detail': '', 'time': 0}
 
-                # 7. Whale Clustering (decays after 3 min)
                 s_clust = False
                 if sigs['clustering']['time'] > 0:
-                    if now - sigs['clustering']['time'] < 180:
+                    if now - sigs['clustering']['time'] < CONFIG['signal_decay_clustering']:
                         s_clust = True
                     else:
                         sigs['clustering'] = {'active': False, 'side': None, 'detail': '', 'time': 0}
 
-                # Count actives
                 active_count = sum([s_abs, bool(s_cvd), bool(s_oi), bool(s_climax), bool(s_fund)])
                 d['alert_level'] = min(active_count, 4)
 
@@ -844,7 +1095,6 @@ class HyperliquidCollector:
                     d['alert_label'] = 'Extreme Conviction'
 
     def _check_cvd_divergence(self, coin):
-        """Price trending but CVD momentum weakening."""
         d = self.data[coin]
         snaps = list(d['abs_snapshots'])
         if len(snaps) < 4:
@@ -852,7 +1102,6 @@ class HyperliquidCollector:
 
         mid = len(snaps) // 2
         s0, s1, s2, s3 = snaps[0], snaps[mid], snaps[mid], snaps[-1]
-
         p1s, p1e = s0['price'], s1['price']
         p2s, p2e = s2['price'], s3['price']
         if p1s <= 0 or p2s <= 0:
@@ -860,32 +1109,29 @@ class HyperliquidCollector:
 
         pd1 = ((p1e - p1s) / p1s) * 100
         pd2 = ((p2e - p2s) / p2s) * 100
-
         cvd1 = (s1['cum_buy'] - s0['cum_buy']) - (s1['cum_sell'] - s0['cum_sell'])
         cvd2 = (s3['cum_buy'] - s2['cum_buy']) - (s3['cum_sell'] - s2['cum_sell'])
 
+        pt = CONFIG['cvd_price_threshold']
+        cr = CONFIG['cvd_ratio']
         result = None
-        # Bearish: price still rising but CVD momentum fading significantly
-        if pd1 > 0.02 and pd2 >= 0 and cvd1 > 0 and cvd2 < cvd1 * 0.4:
+        if pd1 > pt and pd2 >= 0 and cvd1 > 0 and cvd2 < cvd1 * cr:
             result = 'bearish'
             d['signals']['cvd_divergence'] = {
                 'active': True, 'side': 'bearish',
-                'detail': f"CVD fading: {cvd1/1e6:.1f}M → {cvd2/1e6:.1f}M while price still up",
+                'detail': f"CVD fading: {cvd1/1e6:.1f}M -> {cvd2/1e6:.1f}M while price still up",
             }
-        # Bullish: price still falling but selling pressure fading
-        elif pd1 < -0.02 and pd2 <= 0 and cvd1 < 0 and abs(cvd2) < abs(cvd1) * 0.4:
+        elif pd1 < -pt and pd2 <= 0 and cvd1 < 0 and abs(cvd2) < abs(cvd1) * cr:
             result = 'bullish'
             d['signals']['cvd_divergence'] = {
                 'active': True, 'side': 'bullish',
-                'detail': f"Sell pressure fading: {cvd1/1e6:.1f}M → {cvd2/1e6:.1f}M while price still down",
+                'detail': f"Sell pressure fading: {cvd1/1e6:.1f}M -> {cvd2/1e6:.1f}M while price still down",
             }
         else:
             d['signals']['cvd_divergence'] = {'active': False, 'side': None, 'detail': ''}
-
         return result
 
     def _check_oi_divergence(self, coin):
-        """Price up but OI declining = distribution (bearish). Price down but OI declining = capitulation ending (bullish)."""
         d = self.data[coin]
         snaps = list(d['abs_snapshots'])
         if len(snaps) < 3:
@@ -896,23 +1142,21 @@ class HyperliquidCollector:
         price_now = newest['price']
         oi_start = oldest['oi']
         oi_now = newest['oi']
-
         if price_start <= 0 or oi_start <= 0:
             return None
 
         price_delta = ((price_now - price_start) / price_start) * 100
         oi_delta = ((oi_now - oi_start) / oi_start) * 100
+        t = CONFIG['oi_divergence_threshold']
 
         result = None
-        # Bearish: Price UP but OI declining = distribution
-        if price_delta > 0.05 and oi_delta < -0.05:
+        if price_delta > t and oi_delta < -t:
             result = 'bearish'
             d['signals']['oi_divergence'] = {
                 'active': True, 'side': 'bearish',
                 'detail': f"Price +{price_delta:.2f}% but OI {oi_delta:.2f}% (distribution)",
             }
-        # Bullish: Price DOWN but OI declining = shorts closing (capitulation)
-        elif price_delta < -0.05 and oi_delta < -0.05:
+        elif price_delta < -t and oi_delta < -t:
             result = 'bullish'
             d['signals']['oi_divergence'] = {
                 'active': True, 'side': 'bullish',
@@ -920,11 +1164,9 @@ class HyperliquidCollector:
             }
         else:
             d['signals']['oi_divergence'] = {'active': False, 'side': None, 'detail': ''}
-
         return result
 
     def _check_volume_climax(self, coin):
-        """Current 5-min volume > 5x average = climax."""
         d = self.data[coin]
         buckets = list(d['volume_buckets'])
         if len(buckets) < 3:
@@ -932,65 +1174,59 @@ class HyperliquidCollector:
 
         avg = sum(b['total'] for b in buckets) / len(buckets)
         current = d['current_bucket_buy'] + d['current_bucket_sell']
-
         if avg <= 0:
             return None
-
         ratio = current / avg
 
         result = None
-        if ratio >= 5.0:
+        if ratio >= CONFIG['volume_climax_ratio']:
             buy_pct = d['current_bucket_buy'] / current if current > 0 else 0.5
-            if buy_pct > 0.6:
-                result = 'bearish'  # Buy climax often marks top
+            if buy_pct > CONFIG['volume_climax_buy_high']:
+                result = 'bearish'
                 d['signals']['volume_climax'] = {
                     'active': True, 'side': 'bearish',
-                    'detail': f"Buy volume {ratio:.1f}x avg — possible blow-off top",
+                    'detail': f"Buy volume {ratio:.1f}x avg â€” possible blow-off top",
                 }
-            elif buy_pct < 0.4:
-                result = 'bullish'  # Sell climax often marks bottom
+            elif buy_pct < CONFIG['volume_climax_buy_low']:
+                result = 'bullish'
                 d['signals']['volume_climax'] = {
                     'active': True, 'side': 'bullish',
-                    'detail': f"Sell volume {ratio:.1f}x avg — possible capitulation bottom",
+                    'detail': f"Sell volume {ratio:.1f}x avg â€” possible capitulation bottom",
                 }
             else:
                 d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
         else:
             d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
-
         return result
 
     def _check_funding_extreme(self, coin):
-        """Detect genuinely elevated funding rates (±0.005%) indicating
-        overleveraged positions. Normal funding hovers near zero and
-        should NOT trigger this signal."""
         d = self.data[coin]
         funding = d['funding']
         rate_pct = funding * 100
+        t = CONFIG['funding_extreme_threshold']
 
         result = None
-        if rate_pct > 0.005:
+        if rate_pct > t:
             result = 'bearish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bearish',
-                'detail': f"Funding +{rate_pct:.4f}% — longs overleveraged",
+                'detail': f"Funding +{rate_pct:.4f}% â€” longs overleveraged",
             }
-        elif rate_pct < -0.005:
+        elif rate_pct < -t:
             result = 'bullish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bullish',
-                'detail': f"Funding {rate_pct:.4f}% — shorts overleveraged",
+                'detail': f"Funding {rate_pct:.4f}% â€” shorts overleveraged",
             }
         else:
             d['signals']['funding_extreme'] = {'active': False, 'side': None, 'detail': ''}
-
         return result
 
     # ==================== PRESSURE SNAPSHOTS ====================
 
     def _run_pressure(self):
         while self.running:
-            time.sleep(30)
+            time.sleep(CONFIG['pressure_interval'])
             with self._data_lock:
                 for coin in self.coins:
                     d = self.data[coin]
@@ -1010,6 +1246,11 @@ class HyperliquidCollector:
                 'connected': self.connected,
                 'started_at': self.started_at,
                 'uptime_seconds': time.time() - self.started_at if self.started_at else 0,
+                'last_funding_update': self.last_funding_update,
+                'last_trade_update': self.last_trade_update,
+                'snapshot_loaded': self.snapshot_loaded,
+                'exchange_status': self.exchange_status,
+                'log_buffer': _mh.get_entries(),
                 'coins': {}
             }
             for coin in self.coins:
@@ -1026,6 +1267,8 @@ class HyperliquidCollector:
                     'current_buy_count': d['current_buy_count'],
                     'current_sell_count': d['current_sell_count'],
                     'funding': d['funding'],
+                    'funding_history': list(d['funding_history']),
+                    'market_history': list(d['market_history']),
                     'mark_px': d['mark_px'],
                     'oracle_px': d['oracle_px'],
                     'open_interest': d['open_interest'],
@@ -1047,6 +1290,7 @@ class HyperliquidCollector:
                         'snapshots': list(d['abs_snapshots']),
                     },
                     'volume_buckets': list(d['volume_buckets']),
+                    'whale_buckets': [dict(b) for b in d['whale_buckets']],
                     'regime': d['regime'],
                 }
             return state
@@ -1056,22 +1300,21 @@ class HyperliquidCollector:
     def _run_local_server(self):
         self.local_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.local_loop)
-        
+
         async def main():
-            async with websockets.serve(self._local_ws_handler, "0.0.0.0", 8765):
-                print("[Collector] Local WS Server running on ws://0.0.0.0:8765")
-                await asyncio.Future()  # run forever
+            async with websockets.serve(self._local_ws_handler, "127.0.0.1", CONFIG['ws_port']):
+                logger.info(f"Local WS Server running on ws://127.0.0.1:{CONFIG['ws_port']}")
+                await asyncio.Future()
 
         try:
             self.local_loop.run_until_complete(main())
         except Exception as e:
-            print(f"[Collector] Local WS Server error: {e}")
+            logger.error(f"Local WS Server error: {e}")
 
     async def _local_ws_handler(self, websocket):
         self.local_clients.add(websocket)
         try:
             async for message in websocket:
-                # We can handle ping/pong if necessary, but frontend sends ping
                 try:
                     data = json.loads(message)
                     if data.get('method') == 'ping':
@@ -1083,22 +1326,28 @@ class HyperliquidCollector:
                                 self.data[c]['current_sell_vol'] = 0.0
                                 self.data[c]['current_buy_count'] = 0
                                 self.data[c]['current_sell_count'] = 0
-                except:
+                except Exception:
                     pass
+        except Exception:
+            pass  # Client disconnected â€” normal for Streamlit iframes
         finally:
-            self.local_clients.remove(websocket)
+            self.local_clients.discard(websocket)
 
     async def _broadcast_local(self, msg_str):
-        if not self.local_clients:
+        clients = list(self.local_clients)
+        if not clients:
             return
-        # Broadcast concurrently, remove stale clients
-        stale = set()
-        results = await asyncio.gather(
-            *(client.send(msg_str) for client in self.local_clients),
-            return_exceptions=True
-        )
-        for client, result in zip(list(self.local_clients), results):
-            if isinstance(result, Exception):
-                stale.add(client)
-        if stale:
-            self.local_clients -= stale
+        stale = []
+        for client in clients:
+            try:
+                await client.send(msg_str)
+            except Exception:
+                stale.append(client)
+        for client in stale:
+            self.local_clients.discard(client)
+
+
+
+
+
+
