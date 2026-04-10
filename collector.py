@@ -1,4 +1,4 @@
-﻿"""
+"""
 WhaleFlow Persistent Data Collector v3
 8-Signal Reversal Radar + Mega Whale tracking + Funding Flip
 Runs as background daemon â€” collects continuously even when no user is viewing.
@@ -31,7 +31,7 @@ class MemoryLogHandler(logging.Handler):
     def emit(self, record):
         entry = {
             'time': self.format(record).split(' [')[0] if ' [' in self.format(record) else datetime.now().strftime('%H:%M:%S'),
-            'timeShort': datetime.fromtimestamp(record.created).strftime('%H:%M:%S'),
+            'timeShort': datetime.fromtimestamp(record.created).strftime('%I:%M:%S %p'),
             'level': record.levelname,
             'msg': record.getMessage(),
         }
@@ -398,9 +398,15 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_binance())
             except Exception as e:
-                logger.error(f"WS Binance connection error: {e}")
+                error_str = str(e)
                 self.exchange_status['BIN']['connected'] = False
-                self.exchange_status['BIN']['last_error'] = str(e)
+                self.exchange_status['BIN']['last_error'] = error_str
+                
+                if "451" in error_str:
+                    logger.warning("Binance WS disabled: HTTP 451 (Geo-blocked region).")
+                    break
+                
+                logger.error(f"WS Binance connection error: {error_str}")
                 time.sleep(5)
 
     async def _ws_loop_binance(self):

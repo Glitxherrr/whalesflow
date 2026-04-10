@@ -2917,8 +2917,19 @@ class WhaleFlowDashboard {
         const beEl = this.elements.sysBackend;
         if (beEl) {
             const backendConnected = !!(s.connected || this.localWsActive);
-            beEl.textContent = backendConnected ? 'Connected' : 'Disconnected';
-            beEl.className = 'sys-value mono ' + (backendConnected ? 'ok' : 'err');
+            if (backendConnected) {
+                beEl.textContent = 'Connected';
+                beEl.className = 'sys-value mono ok';
+                beEl.style.color = '';
+            } else if (this.publicExchangesConnected || this.isConnected) {
+                beEl.textContent = 'Cloud Mode';
+                beEl.className = 'sys-value mono';
+                beEl.style.color = '#64b5f6'; // Light blue to indicate intentional fallback
+            } else {
+                beEl.textContent = 'Disconnected';
+                beEl.className = 'sys-value mono err';
+                beEl.style.color = '';
+            }
         }
 
         // Last funding
