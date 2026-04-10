@@ -815,9 +815,6 @@ body {
     padding-top: 18px;
 }
 
-.funding-oi-row .price-stack {
-    flex-wrap: nowrap;
-}
 
 .price-stack {
     display: flex;
