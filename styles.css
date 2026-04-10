@@ -800,7 +800,7 @@ body {
 }
 
 .compact-price-details {
-    gap: 16px;
+    display: flex;
     margin-top: auto;
     padding-top: 18px;
 }
@@ -822,6 +822,21 @@ body {
     gap: 8px;
     flex-wrap: wrap;
     justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+    .price-stack {
+        gap: 4px;
+    }
+    .price-stack .mini-hourly-change {
+        padding: 2px 4px;
+        font-size: 0.62rem;
+    }
+    .price-stack .price-val {
+        width: 100%;
+        text-align: right;
+        margin-top: 2px;
+    }
 }
 
 .card-count {
