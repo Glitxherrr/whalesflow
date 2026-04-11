@@ -15,6 +15,7 @@ import logging.handlers
 import signal as _signal
 import atexit
 import os
+import sys
 from collections import deque
 from datetime import datetime
 
@@ -111,8 +112,18 @@ class HyperliquidCollector:
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
+                    # Handle Streamlit hot-reloads causing zombie threads
+                    old_inst = getattr(sys, '_whaleflow_collector', None)
+                    if old_inst is not None and getattr(old_inst, 'running', False):
+                        try:
+                            old_inst.shutdown()
+                            time.sleep(2)  # Give old websockets time to release port
+                        except Exception as e:
+                            logger.error(f"Failed to shutdown old instance: {e}")
+                            
                     inst = cls()
                     cls._instance = inst
+                    sys._whaleflow_collector = inst
                     inst.start()
         return cls._instance
 
@@ -1324,7 +1335,8 @@ class HyperliquidCollector:
         async def main():
             async with websockets.serve(self._local_ws_handler, "127.0.0.1", CONFIG['ws_port']):
                 logger.info(f"Local WS Server running on ws://127.0.0.1:{CONFIG['ws_port']}")
-                await asyncio.Future()
+                while self.running:
+                    await asyncio.sleep(1)
 
         try:
             self.local_loop.run_until_complete(main())
