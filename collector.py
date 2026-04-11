@@ -398,12 +398,13 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_binance())
             except Exception as e:
-                error_str = str(e)
+                error_str = f"{type(e).__name__}: {str(e)}"
                 self.exchange_status['BIN']['connected'] = False
                 self.exchange_status['BIN']['last_error'] = error_str
                 
-                if "451" in error_str:
-                    logger.warning("Binance WS disabled: HTTP 451 (Geo-blocked region).")
+                # Check for 451 in error to handle Streamlit Cloud block gracefully
+                if "451" in error_str or getattr(e, "status_code", None) == 451:
+                    logger.warning("Binance WS disabled for this host: HTTP 451 (Geo-blocked region).")
                     break
                 
                 logger.error(f"WS Binance connection error: {error_str}")
@@ -791,11 +792,24 @@ class HyperliquidCollector:
             time.sleep(CONFIG['funding_poll_interval'])
 
     def _fetch_funding(self):
-        r = requests.post('https://api.hyperliquid.xyz/info',
-                          json={'type': 'metaAndAssetCtxs'}, timeout=10)
-        data = r.json()
+        try:
+            r = requests.post('https://api.hyperliquid.xyz/info',
+                              json={'type': 'metaAndAssetCtxs'}, timeout=10)
+            data = r.json()
+        except Exception as e:
+            logger.warning(f"Funding API request failed: {e}")
+            return
+            
+        if not data or not isinstance(data, list) or len(data) < 2:
+            logger.warning(f"Unexpected funding data format received: {data}")
+            return
+            
+        if not data[0] or not isinstance(data[0], dict) or 'universe' not in data[0]:
+            logger.warning("Missing 'universe' key in funding data.")
+            return
+
         universe = data[0]['universe']
-        contexts = data[1]
+        contexts = data[1] if isinstance(data[1], list) else []
 
         with self._data_lock:
             for coin in self.coins:
