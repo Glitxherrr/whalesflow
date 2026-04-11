@@ -1799,16 +1799,19 @@ class WhaleFlowDashboard {
             intervalText: '1h',
             incompleteText: '>1h',
             complete: hourBase.complete,
+            zeroThreshold: 0.0000001
         });
         this._renderChangeBadge(fourHourEl, fourHourBase.base ? ((rate - fourHourBase.base.funding) * 100) : null, {
             intervalText: '4h',
             incompleteText: '>4h',
             complete: fourHourBase.complete,
+            zeroThreshold: 0.0000001
         });
         this._renderChangeBadge(dailyEl, dayBase.base ? ((rate - dayBase.base.funding) * 100) : null, {
             intervalText: '24h',
             incompleteText: '>24h',
             complete: dayBase.complete,
+            zeroThreshold: 0.0000001
         });
 
         this.elements.fundingCard.className = `summary-card funding-card market-combo-card ${badgeClass}`;
@@ -2514,6 +2517,23 @@ class WhaleFlowDashboard {
                         price: p.price
                     }));
                 }
+            }
+
+            // Historical Data (Funding & Market)
+            if (serverCoin.funding_history) {
+                d.fundingHistory = serverCoin.funding_history.map(h => ({
+                    time: h.time * 1000,
+                    funding: h.funding
+                }));
+            }
+            if (serverCoin.market_history) {
+                const mh = serverCoin.market_history;
+                d.marketHistory = mh.map(m => ({
+                    time: m.time * 1000,
+                    markPx: m.mark_px,
+                    openInterest: m.open_interest,
+                    dayVolume: m.day_volume
+                }));
             }
         });
 
