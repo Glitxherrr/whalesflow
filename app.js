@@ -1728,10 +1728,16 @@ class WhaleFlowDashboard {
 
     _renderChangeBadge(el, changeValue, { intervalText = '1h', incompleteText = null, compact = false, complete = true, suffix = '%', formatter = null, zeroThreshold = 0.00005 } = {}) {
         if (!el) return;
-        el.className = `${compact ? 'mini-hourly-change' : 'funding-hourly-change'} mono`;
+        const baseClass = compact ? 'mini-hourly-change' : 'funding-hourly-change';
+        el.className = `${baseClass} mono`;
         const label = complete ? intervalText : (incompleteText || `>${intervalText}`);
         const formatted = (value) => formatter ? formatter(value) : `${value.toFixed(4)}${suffix}`;
-        if (changeValue === null || Math.abs(changeValue) < zeroThreshold) {
+        
+        if (changeValue === null || changeValue === undefined) {
+            el.innerHTML = `<span class="loading-mini">${label} ---</span>`;
+            return;
+        }
+        if (Math.abs(changeValue) < zeroThreshold) {
             el.innerHTML = `&harr; ${label} ${formatted(0)}`;
             return;
         }
@@ -1756,12 +1762,13 @@ class WhaleFlowDashboard {
         rateEl.textContent = (rate * 100).toFixed(4) + '%';
 
         let badgeClass, badgeText, currentState;
-        if (rate > 0.000005) {
+        // Hyperliquid funding can be very small; using a more sensitive threshold (0.1 bps / hour)
+        if (rate > 0.000001) {
             badgeClass = 'positive';
             badgeText = '&uarr; Positive (Longs Pay)';
             rateEl.style.color = 'var(--buy-primary)';
             currentState = 'positive';
-        } else if (rate < -0.000005) {
+        } else if (rate < -0.000001) {
             badgeClass = 'negative';
             badgeText = '&darr; Negative (Shorts Pay)';
             rateEl.style.color = 'var(--sell-primary)';
