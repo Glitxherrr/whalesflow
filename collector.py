@@ -423,10 +423,10 @@ class HyperliquidCollector:
 
     async def _ws_loop_binance(self):
         streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
-        url = f"wss://stream.binance.com:9443/stream?streams={streams}"
+        url = f"wss://stream.binance.us:9443/stream?streams={streams}"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BIN']['connected'] = True
-            logger.info("WS Binance connected")
+            logger.info("WS Binance.US connected")
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
