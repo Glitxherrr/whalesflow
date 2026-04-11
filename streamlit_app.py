@@ -67,5 +67,19 @@ window.__SERVER_STATE__ = {json.dumps(server_state)};
 </script>"""
 )
 
-# Render the full dashboard
-st.components.v1.html(html_template, height=2200, scrolling=True)
+# Render the full dashboard with auto-polling capability
+# We use st.fragment with run_every to simulate real-time updates on Streamlit Cloud
+@st.fragment(run_every="10s")
+def render_dashboard():
+    # Re-fetch state for the poller
+    latest_state = collector.get_state()
+    
+    # Inject latest state
+    ready_html = html_template.replace(
+        'window.__SERVER_STATE__ = {json.dumps(server_state)};',
+        f'window.__SERVER_STATE__ = {json.dumps(latest_state)};'
+    )
+    
+    st.components.v1.html(ready_html, height=2200, scrolling=True)
+
+render_dashboard()

@@ -25,6 +25,9 @@ class WhaleFlowDashboard {
         this.reconnectDelay = 2000;
         this.isConnected = false;
 
+        // Load active coin from memory to persist across Streamlit refreshes
+        this._loadCoinFromStorage();
+
         // Supported coins (reduced set)
         this.coinList = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'];
 
@@ -224,6 +227,15 @@ class WhaleFlowDashboard {
                         d.lastTradeTime = saved.lastTime || 0;
                     }
                 });
+            }
+        } catch(e) {}
+    }
+
+    _loadCoinFromStorage() {
+        try {
+            const saved = localStorage.getItem('whaleflow_current_coin');
+            if (saved && this.coinList.includes(saved)) {
+                this.currentCoin = saved;
             }
         } catch(e) {}
     }
@@ -583,6 +595,7 @@ class WhaleFlowDashboard {
         }
 
         this.currentCoin = newCoin;
+        localStorage.setItem('whaleflow_current_coin', newCoin);
 
         // Set coin-specific thresholds
         if (newCoin === 'BTC') {
@@ -1961,7 +1974,9 @@ class WhaleFlowDashboard {
 
     renderTradesList() {
         const container = this.elements.tradesList;
+        if (!container) return;
 
+        const scrollPos = container.scrollTop;
         const filteredTrades = this.getDisplayTrades();
 
         if (filteredTrades.length === 0) {
@@ -1996,6 +2011,9 @@ class WhaleFlowDashboard {
         }).join('');
 
         this.elements.tradeCount.textContent = `${filteredTrades.length} trade${filteredTrades.length !== 1 ? 's' : ''}`;
+
+        // Restore scroll position
+        if (scrollPos > 0) container.scrollTop = scrollPos;
     }
 
     // ==================== ANALYTICS ====================
@@ -2519,8 +2537,9 @@ class WhaleFlowDashboard {
 
         // Refresh all UI
         this.updateSummaryCards();
-        this.renderTradesList();
         this.updateAnalytics();
+        this.renderTradesList();
+        this.renderLogSidebarItems();
         this.renderAbsorptionUI();
         this.renderReversalRadar();
         this.renderMegaWhales();
@@ -3005,7 +3024,14 @@ class WhaleFlowDashboard {
             tab.addEventListener('click', () => {
                 this._logSidebarOpen = !this._logSidebarOpen;
                 if (sidebar) sidebar.classList.toggle('open', this._logSidebarOpen);
+                localStorage.setItem('whaleflow_logsidebar_open', String(this._logSidebarOpen));
             });
+        }
+        
+        // Restore sidebar state
+        if (localStorage.getItem('whaleflow_logsidebar_open') === 'true') {
+            this._logSidebarOpen = true;
+            if (sidebar) sidebar.classList.add('open');
         }
 
         if (closeBtn && !closeBtn._bound) {
@@ -3013,6 +3039,7 @@ class WhaleFlowDashboard {
             closeBtn.addEventListener('click', () => {
                 this._logSidebarOpen = false;
                 if (sidebar) sidebar.classList.remove('open');
+                localStorage.setItem('whaleflow_logsidebar_open', 'false');
             });
         }
 
@@ -3041,20 +3068,60 @@ class WhaleFlowDashboard {
     }
 
     _renderLogSidebar() {
-        const levels = ['ERROR', 'WARNING', 'INFO', 'DEBUG'];
-        const grouped = { ERROR: [], WARNING: [], INFO: [], DEBUG: [] };
+        this.renderLogSidebarItems();
+    }
 
-        // Group entries
-        (this._logEntries || []).forEach(entry => {
-            const lvl = entry.level || 'INFO';
-            if (grouped[lvl]) {
-                grouped[lvl].push(entry);
-            } else {
-                grouped['INFO'].push(entry);
-            }
+    renderLogSidebarItems() {
+        const bodies = {
+            'ERROR': this.elements.logBodyERROR,
+            'WARNING': this.elements.logBodyWARNING,
+            'INFO': this.elements.logBodyINFO,
+            'DEBUG': this.elements.logBodyDEBUG
+        };
+
+        const counts = {
+            'ERROR': this.elements.logCountERROR,
+            'WARNING': this.elements.logCountWARNING,
+            'INFO': this.elements.logCountINFO,
+            'DEBUG': this.elements.logCountDEBUG
+        };
+
+        const levels = ['ERROR', 'WARNING', 'INFO', 'DEBUG'];
+        const grouped = { 'ERROR': [], 'WARNING': [], 'INFO': [], 'DEBUG': [] };
+
+        (this._logEntries || []).forEach(log => {
+            if (grouped[log.level]) grouped[log.level].push(log);
         });
 
-        // Update badge
+        levels.forEach(level => {
+            const body = bodies[level];
+            const count = counts[level];
+            if (!body || !count) return;
+
+            // Save scroll position
+            const scrollPos = body.scrollTop;
+
+            count.textContent = grouped[level].length;
+            
+            // Reversed logs (newest on top)
+            const html = grouped[level].length === 0 
+                ? '<div class="log-empty-msg">No entries</div>'
+                : grouped[level].slice(-100).reverse().map(e => {
+                    const time = e.timeShort || '';
+                    const msg = (e.msg || e.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    return `<div class="log-entry level-${level}"><span class="log-entry-time">${time}</span><span class="log-entry-msg">${msg}</span></div>`;
+                }).join('');
+
+            body.innerHTML = html;
+
+            const groupEl = this.elements['logGroup' + level];
+            if (groupEl) groupEl.classList.toggle('empty', grouped[level].length === 0);
+
+            // Restore scroll position
+            if (scrollPos > 0) body.scrollTop = scrollPos;
+        });
+
+        // Overall badge
         const badge = this.elements.logBadge;
         if (badge) {
             const total = this._logEntries ? this._logEntries.length : 0;
@@ -3062,32 +3129,8 @@ class WhaleFlowDashboard {
             badge.className = 'log-tab-badge';
             if (grouped.ERROR.length > 0) badge.classList.add('has-errors');
             else if (grouped.WARNING.length > 0) badge.classList.add('has-warnings');
+            badge.style.display = total > 0 ? 'flex' : 'none';
         }
-
-        // Render each group
-        levels.forEach(level => {
-            const countEl = this.elements['logCount' + level];
-            const bodyEl = this.elements['logBody' + level];
-            const groupEl = this.elements['logGroup' + level];
-            const entries = grouped[level];
-
-            if (countEl) countEl.textContent = String(entries.length);
-            if (groupEl) groupEl.classList.toggle('empty', entries.length === 0);
-
-            if (bodyEl) {
-                if (entries.length === 0) {
-                    bodyEl.innerHTML = '<div class="log-empty-msg">No entries</div>';
-                } else {
-                    // Show newest first, cap at 100 per group
-                    const recent = entries.slice(-100).reverse();
-                    bodyEl.innerHTML = recent.map(e => {
-                        const time = e.timeShort || '';
-                        const msg = (e.msg || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                        return `<div class="log-entry level-${level}"><span class="log-entry-time">${time}</span><span class="log-entry-msg">${msg}</span></div>`;
-                    }).join('');
-                }
-            }
-        });
     }
 }
 
