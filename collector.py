@@ -31,6 +31,7 @@ class MemoryLogHandler(logging.Handler):
         self._broadcaster = fn
     def emit(self, record):
         entry = {
+            'timestamp': record.created,
             'time': self.format(record).split(' [')[0] if ' [' in self.format(record) else datetime.now().strftime('%H:%M:%S'),
             'timeShort': datetime.fromtimestamp(record.created).strftime('%I:%M:%S %p'),
             'level': record.levelname,

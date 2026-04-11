@@ -822,9 +822,13 @@ class WhaleFlowDashboard {
                 this.handleFundingUpdate(msg.data);
                 break;
             case 'log':
-                this._logEntries.push(msg.data);
-                if (this._logEntries.length > 500) this._logEntries.shift();
-                this._renderLogSidebar();
+                const clearedAt = parseInt(localStorage.getItem('whaleflow_logs_cleared_at') || '0', 10);
+                const logTimeMs = msg.data.timestamp ? msg.data.timestamp * 1000 : 0;
+                if (logTimeMs > clearedAt || clearedAt === 0) {
+                    this._logEntries.push(msg.data);
+                    if (this._logEntries.length > 500) this._logEntries.shift();
+                    this._renderLogSidebar();
+                }
                 break;
         }
     }
@@ -2534,9 +2538,13 @@ class WhaleFlowDashboard {
         this.updateSystemPanel();
         this._setupSystemPanelToggle();
 
-        // Load log buffer
+        // Load log buffer and filter out logs the user already permanently cleared
         if (state.log_buffer && Array.isArray(state.log_buffer)) {
-            this._logEntries = state.log_buffer;
+            const clearedAt = parseInt(localStorage.getItem('whaleflow_logs_cleared_at') || '0', 10);
+            this._logEntries = state.log_buffer.filter(log => {
+                const logTimeMs = log.timestamp ? log.timestamp * 1000 : 0;
+                return logTimeMs > clearedAt;
+            });
             this._renderLogSidebar();
         }
         this._setupLogSidebar();
@@ -3012,6 +3020,7 @@ class WhaleFlowDashboard {
             clearBtn._bound = true;
             clearBtn.addEventListener('click', () => {
                 this._logEntries = [];
+                localStorage.setItem('whaleflow_logs_cleared_at', Date.now().toString());
                 this._renderLogSidebar();
             });
         }
