@@ -825,7 +825,7 @@ class WhaleFlowDashboard {
     // ==================== MESSAGE HANDLING ====================
 
     handleMessage(msg) {
-        if (!msg.channel || !msg.data) return;
+        if (!msg.channel) return;
 
         switch (msg.channel) {
             case 'trades': {
@@ -860,7 +860,10 @@ class WhaleFlowDashboard {
                 }
                 break;
             case 'all_clients_clear':
-                this._performGlobalClear(msg.clear_time);
+                if (msg.clear_time) {
+                    this.currentModeClearTime = msg.clear_time;
+                }
+                this._performGlobalClear();
                 break;
             case 'threshold_update':
                 const remoteCoin = msg.coin;
@@ -2495,14 +2498,18 @@ class WhaleFlowDashboard {
             const currentThresh = state.active_thresholds[this.currentCoin];
             if (currentThresh && this.whaleThreshold !== currentThresh) {
                 this.whaleThreshold = currentThresh;
-                this.elements.whaleThreshold.value = currentThresh;
+                if (this.elements.whaleThreshold) {
+                    this.elements.whaleThreshold.value = currentThresh;
+                }
                 thresholdChanged = true;
             }
             
             if (thresholdChanged) {
                 console.log("🐋 Thresholds updated from server, re-processing UI...");
                 this.reprocessTrades();
-                this.renderOrderbook();
+                if (typeof this.renderOrderbook === 'function') {
+                    this.renderOrderbook();
+                }
             }
         }
 
