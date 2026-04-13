@@ -301,11 +301,12 @@ class HyperliquidCollector:
                 logger.warning("Snapshot file is empty or invalid")
                 return
 
-            # Restore system-level state
+            # Restore system-level state (don't overwrite new exchange keys)
             self.started_at = state.get('started_at', self.started_at)
             self.last_funding_update = state.get('last_funding_update', self.last_funding_update)
             self.last_trade_update = state.get('last_trade_update', self.last_trade_update)
-            self.exchange_status = state.get('exchange_status', self.exchange_status)
+            if 'exchange_status' in state:
+                self.exchange_status.update(state['exchange_status'])
             
             # Restore log buffer
             if state.get('log_buffer'):
@@ -441,12 +442,12 @@ class HyperliquidCollector:
             async for raw in ws:
                 try:
                     data = json.loads(raw)['data']
-                    self._process_external_trade({
+                    self._process_trades([{
                         'coin': data['s'].replace('USDT', ''),
                         'px': float(data['p']), 'sz': float(data['q']),
                         'side': 'B' if not data['m'] else 'S',
                         'time': int(data['E']), 'exchange': 'BIN_SPOT'
-                    })
+                    }])
                 except Exception: pass
 
     def _run_ws_binance_futures(self):
@@ -471,12 +472,12 @@ class HyperliquidCollector:
             async for raw in ws:
                 try:
                     data = json.loads(raw)['data']
-                    self._process_external_trade({
+                    self._process_trades([{
                         'coin': data['s'].replace('USDT', ''),
                         'px': float(data['p']), 'sz': float(data['q']),
                         'side': 'B' if not data['m'] else 'S',
                         'time': int(data['E']), 'exchange': 'BIN_FUT'
-                    })
+                    }])
                 except Exception: pass
 
     # ==================== WEBSOCKET - Bybit ====================
@@ -539,11 +540,11 @@ class HyperliquidCollector:
                     if 'data' in msg and isinstance(msg['data'], list):
                         for t in msg['data']:
                             coin = msg['topic'].split('.')[1].replace('USDT', '')
-                            self._process_external_trade({
+                            self._process_trades([{
                                 'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
                                 'side': 'B' if t['S'] == 'Buy' else 'S',
                                 'time': int(t['T']), 'exchange': 'BYB_SPOT'
-                            })
+                            }])
                 except Exception: pass
 
     # ==================== WEBSOCKET - OKX ====================
@@ -658,11 +659,11 @@ class HyperliquidCollector:
                     msg = json.loads(raw)
                     if msg.get('feed') == 'trade' and 'qty' in msg:
                         coin = msg['product_id'].split('_')[1].replace('usd', '').upper()
-                        self._process_external_trade({
+                        self._process_trades([{
                             'coin': coin, 'px': float(msg['price']), 'sz': float(msg['qty']),
                             'side': 'B' if msg['side'] == 'buy' else 'S',
                             'time': int(msg['time']), 'exchange': 'KRK_FUT'
-                        })
+                        }])
                 except Exception: pass
 
     # ==================== WEBSOCKET - Coinbase ====================
