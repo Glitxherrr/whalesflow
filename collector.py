@@ -140,9 +140,13 @@ class HyperliquidCollector:
         self.started_at = None
 
         # Exchange health tracking
+        self.exchanges = [
+            'HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 
+            'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'
+        ]
         self.exchange_status = {
             ex: {'connected': False, 'last_msg': 0, 'last_error': ''}
-            for ex in ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB']
+            for ex in self.exchanges
         }
 
         # Freshness timestamps
@@ -248,6 +252,18 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_ws_kraken_spot, daemon=True, name='krk_spot').start()
         threading.Thread(target=self._run_ws_kraken_futures, daemon=True, name='krk_fut').start()
         threading.Thread(target=self._run_ws_coinbase, daemon=True, name='cb').start()
+        
+        # New aggressive expansion exchanges
+        threading.Thread(target=self._run_ws_deribit, daemon=True, name='drb').start()
+        threading.Thread(target=self._run_ws_bitfinex, daemon=True, name='bfx').start()
+        threading.Thread(target=self._run_ws_bitget, daemon=True, name='bgt').start()
+        threading.Thread(target=self._run_ws_bitget_futures, daemon=True, name='bgt_fut').start()
+        threading.Thread(target=self._run_ws_mexc, daemon=True, name='mexc').start()
+        threading.Thread(target=self._run_ws_mexc_futures, daemon=True, name='mexc_fut').start()
+        threading.Thread(target=self._run_ws_upbit, daemon=True, name='upb').start()
+        threading.Thread(target=self._run_ws_gate, daemon=True, name='gate').start()
+        threading.Thread(target=self._run_ws_gate_futures, daemon=True, name='gate_fut').start()
+
         threading.Thread(target=self._run_funding, daemon=True, name='funding').start()
         threading.Thread(target=self._run_snapshots, daemon=True, name='snapshots').start()
         threading.Thread(target=self._run_signals, daemon=True, name='signals').start()
@@ -681,30 +697,339 @@ class HyperliquidCollector:
                 time.sleep(5)
 
     async def _ws_loop_coinbase(self):
-        url = "wss://ws-feed.exchange.coinbase.com"
+        url = "wss://advanced-trade-ws.coinbase.com"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['CB']['connected'] = True
-            logger.info("WS Coinbase connected")
-            args = [f"{coin}-USD" for coin in self.coins]
+            logger.info("WS Coinbase (Spot + Perp) connected")
+            # Subscribe Spot and International Perps
+            symbols = [f"{coin}-USDT" for coin in self.coins]
+            symbols += [f"{coin}-PERP" for coin in self.coins if coin in ['BTC', 'ETH', 'SOL', 'XRP']]
             await ws.send(json.dumps({
-                "type": "subscribe", "product_ids": args, "channels": ["matches"]
+                "type": "subscribe",
+                "product_ids": symbols,
+                "channel": "market_trades"
             }))
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
-                    if msg.get('type') == 'match':
-                        coin = msg['product_id'].split('-')[0]
-                        if coin in self.coins:
-                            dtime = datetime.fromisoformat(msg['time'].replace('Z', '+00:00'))
-                            parsed_trade = {
-                                'coin': coin, 'px': float(msg['price']), 'sz': float(msg['size']),
-                                'side': 'B' if msg['side'] == 'buy' else 'S',
+                    if msg.get('channel') == 'market_trades' and 'trades' in msg:
+                        for t in msg['trades']:
+                            coin = t['product_id'].split('-')[0]
+                            dtime = datetime.fromisoformat(t['time'].replace('Z', '+00:00'))
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
+                                'side': 'B' if t['side'] == 'buy' else 'S',
                                 'time': int(dtime.timestamp() * 1000), 'exchange': 'CB'
-                            }
-                            self._process_trades([parsed_trade])
+                            }])
                             self.exchange_status['CB']['last_msg'] = time.time()
                 except Exception:
                     logger.warning("WS Coinbase parse error", exc_info=True)
+
+    # ==================== WEBSOCKET - Deribit ====================
+
+    def _run_ws_deribit(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_deribit())
+            except Exception as e:
+                logger.error(f"WS Deribit error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_deribit(self):
+        url = "wss://www.deribit.com/ws/api/v2"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['DRB']['connected'] = True
+            logger.info("WS Deribit (All Futures) connected")
+            # Subscribe to all trades for our coins (Perpetuals, Dated, and Spot)
+            for coin in self.coins:
+               if coin == 'PAXG': continue
+               await ws.send(json.dumps({
+                   "jsonrpc": "2.0", "id": 1, "method": "public/subscribe",
+                   "params": {"channels": [f"trades.{coin}.raw", f"trades.{coin}_USDC.raw", f"trades.{coin}_USDT.raw"]}
+               }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'params' in msg and 'data' in msg['params']:
+                        for t in msg['params']['data']:
+                            inst = t['instrument_name']
+                            if 'OPTION' in inst: continue # Skip options for now
+                            coin = inst.split('-')[0]
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['price']), 'sz': float(t['amount']),
+                                'side': 'B' if t['direction'] == 'buy' else 'S',
+                                'time': int(t['timestamp']), 'exchange': 'DRB_FUT'
+                            }])
+                except Exception: pass
+
+    # ==================== WEBSOCKET - Bitfinex ====================
+
+    def _run_ws_bitfinex(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_bitfinex())
+            except Exception as e:
+                if "451" in str(e):
+                    logger.warning("Bitfinex geo-blocked.")
+                    break
+                logger.error(f"WS Bitfinex error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_bitfinex(self):
+        url = "wss://api-pub.bitfinex.com/ws/2"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['BFX']['connected'] = True
+            logger.info("WS Bitfinex connected")
+            # Channel mapping
+            chan_map = {}
+            for coin in self.coins:
+                # Subscribe Spot
+                await ws.send(json.dumps({
+                    "event": "subscribe", "channel": "trades", "symbol": f"t{coin}UST"
+                }))
+                # Subscribe Futures (where available)
+                if coin in ['BTC', 'ETH', 'SOL']:
+                    await ws.send(json.dumps({
+                        "event": "subscribe", "channel": "trades", "symbol": f"t{coin}F0:UST0"
+                    }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if isinstance(msg, dict) and msg.get('event') == 'subscribed':
+                        sym = msg['symbol'].replace('t', '').replace('UST', '').replace('F0:', '').replace('0', '')
+                        chan_map[msg['chanId']] = sym
+                    elif isinstance(msg, list) and len(msg) >= 3 and msg[1] == 'te':
+                        chan_id = msg[0]
+                        coin = chan_map.get(chan_id, '?')
+                        t = msg[2]
+                        self._process_trades([{
+                            'coin': coin, 'px': float(t[3]), 'sz': abs(float(t[2])),
+                            'side': 'B' if float(t[2]) > 0 else 'S',
+                            'time': int(t[1]), 'exchange': 'BFX'
+                        }])
+                except Exception: pass
+
+    # ==================== WEBSOCKET - Bitget ====================
+
+    def _run_ws_bitget(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_bitget())
+            except Exception as e:
+                if "451" in str(e): break
+                logger.error(f"WS Bitget error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_bitget(self):
+        url = "wss://ws.bitget.com/v2/ws/public"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['BGT']['connected'] = True
+            args = [{"instType": "SPOT", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'data' in msg:
+                        for t in msg['data']:
+                            coin = t['instId'].replace('USDT', '')
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
+                                'side': 'B' if t['side'] == 'buy' else 'S',
+                                'time': int(t['ts']), 'exchange': 'BGT_SPOT'
+                            }])
+                except Exception: pass
+
+    def _run_ws_bitget_futures(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_bitget_futures())
+            except Exception as e:
+                if "451" in str(e): break
+                logger.error(f"WS Bitget Futures error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_bitget_futures(self):
+        url = "wss://ws.bitget.com/v2/ws/market"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            args = [{"instType": "FUTURES", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'data' in msg:
+                        for t in msg['data']:
+                            coin = t['instId'].replace('USDT', '')
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
+                                'side': 'B' if t['side'] == 'buy' else 'S',
+                                'time': int(t['ts']), 'exchange': 'BGT_FUT'
+                            }])
+                except Exception: pass
+
+    # ==================== WEBSOCKET - MEXC ====================
+
+    def _run_ws_mexc(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_mexc())
+            except Exception as e:
+                logger.error(f"WS MEXC error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_mexc(self):
+        url = "wss://wbs.mexc.com/ws"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['MEXC']['connected'] = True
+            subs = [f"spot@public.deals.v3.api@{coin}USDT" for coin in self.coins]
+            await ws.send(json.dumps({"method": "SUBSCRIPTION", "params": subs}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'd' in msg and 'deals' in msg['d']:
+                        coin = msg['s'].replace('USDT', '')
+                        for t in msg['d']['deals']:
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
+                                'side': 'B' if t['S'] == 1 else 'S',
+                                'time': int(t['t']), 'exchange': 'MEXC'
+                            }])
+                except Exception: pass
+
+    def _run_ws_mexc_futures(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_mexc_futures())
+            except Exception as e:
+                logger.error(f"WS MEXC Futures error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_mexc_futures(self):
+        url = "wss://contract.mexc.com/ws"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            for coin in self.coins:
+                await ws.send(json.dumps({"method": "sub.deal", "param": {"symbol": f"{coin}_USDT"}}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('channel') == 'push.deal':
+                        d = msg['data']
+                        coin = msg['symbol'].split('_')[0]
+                        self._process_trades([{
+                            'coin': coin, 'px': float(d['p']), 'sz': float(d['v']),
+                            'side': 'B' if d['T'] == 1 else 'S',
+                            'time': int(d['t']), 'exchange': 'MEXC_FUT'
+                        }])
+                except Exception: pass
+
+    # ==================== WEBSOCKET - Upbit ====================
+
+    def _run_ws_upbit(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_upbit())
+            except Exception as e:
+                logger.error(f"WS Upbit error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_upbit(self):
+        url = "wss://api.upbit.com/websocket/v1"
+        krw_usd = 1380.0 # Approximate conversion for volume normalization
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['UPB']['connected'] = True
+            codes = [f"KRW-{coin}" for coin in self.coins if coin != 'PAXG']
+            await ws.send(json.dumps([{"ticket": "whaleflow"}, {"type": "trade", "codes": codes}]))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    coin = msg['code'].split('-')[1]
+                    # Normalize KRW to USD
+                    px_usd = float(msg['trade_price']) / krw_usd
+                    sz_units = float(msg['trade_volume'])
+                    self._process_trades([{
+                        'coin': coin, 'px': px_usd, 'sz': sz_units,
+                        'side': 'B' if msg['ask_bid'] == 'BID' else 'S',
+                        'time': int(msg['trade_timestamp']), 'exchange': 'UPB'
+                    }])
+                except Exception: pass
+
+    # ==================== WEBSOCKET - Gate.io ====================
+
+    def _run_ws_gate(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_gate())
+            except Exception as e:
+                logger.error(f"WS Gate error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_gate(self):
+        url = "wss://api.gateio.ws/ws/v4/"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['GATE']['connected'] = True
+            args = [f"{coin}_USDT" for coin in self.coins]
+            await ws.send(json.dumps({
+                "time": int(time.time()), "channel": "spot.trades",
+                "event": "subscribe", "payload": args
+            }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('event') == 'update' and 'result' in msg:
+                        t = msg['result']
+                        coin = t['currency_pair'].split('_')[0]
+                        self._process_trades([{
+                            'coin': coin, 'px': float(t['price']), 'sz': float(t['amount']),
+                            'side': 'B' if t['side'] == 'buy' else 'S',
+                            'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE'
+                        }])
+                except Exception: pass
+
+    def _run_ws_gate_futures(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_gate_futures())
+            except Exception as e:
+                logger.error(f"WS Gate Futures error: {e}")
+                time.sleep(10)
+
+    async def _ws_loop_gate_futures(self):
+        url = "wss://fx-ws.gateio.ws/v4/ws/usdt"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            args = [f"{coin}_USDT" for coin in self.coins]
+            await ws.send(json.dumps({
+                "time": int(time.time()), "channel": "futures.trades",
+                "event": "subscribe", "payload": args
+            }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('event') == 'update' and 'result' in msg:
+                        for t in msg['result']:
+                            coin = t['contract'].split('_')[0]
+                            self._process_trades([{
+                                'coin': coin, 'px': float(t['p']), 'sz': float(t['size']),
+                                'side': 'B' if float(t['size']) > 0 else 'S',
+                                'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE_FUT'
+                            }])
+                except Exception: pass
 
     # ==================== TRADE PROCESSING ====================
 
