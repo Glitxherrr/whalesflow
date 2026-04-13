@@ -60,6 +60,9 @@ class WhaleFlowDashboard {
         this.elements = {};
         this.cacheElements();
 
+        // Load custom thresholds from previous session if any
+        this._loadCoinThreshold(this.currentCoin);
+
         // Init
         this.renderCoinSelector();
         this.setupEventListeners();
@@ -240,6 +243,22 @@ class WhaleFlowDashboard {
         } catch(e) {}
     }
 
+    _loadCoinThreshold(coin) {
+        try {
+            const stored = localStorage.getItem(`whaleflow_threshold_${coin}`);
+            if (stored) {
+                this.whaleThreshold = parseFloat(stored);
+            } else {
+                // Apply defaults if no user override
+                const defaults = { BTC: 50000, ETH: 10000, SOL: 5000, PAXG: 10, XRP: 50 };
+                this.whaleThreshold = defaults[coin] || 100;
+            }
+            if (this.elements.whaleThreshold) {
+                this.elements.whaleThreshold.value = this.whaleThreshold;
+            }
+        } catch(e) {}
+    }
+
     // ==================== DOM CACHING ====================
 
     cacheElements() {
@@ -339,13 +358,13 @@ class WhaleFlowDashboard {
         // Whale threshold
         this.elements.whaleThreshold.addEventListener('change', (e) => {
             const val = parseInt(e.target.value, 10);
-            if (!isNaN(val)) {
+            if (!isNaN(val) && val > 0) {
                 this.whaleThreshold = val;
-                // Persist custom threshold for this specific coin
+                // Save it for this coin specifically
                 localStorage.setItem(`whaleflow_threshold_${this.currentCoin}`, val.toString());
                 this.reprocessTrades();
                 this.renderOrderbook();
-                this.showToast(`🐋 Whale threshold set to $${this.formatCompact(val)}`);
+                this.showToast(`🐋 Whale threshold for ${this.currentCoin} set to $${this.formatCompact(val)}`);
             }
         });
 
@@ -600,24 +619,9 @@ class WhaleFlowDashboard {
         this.currentCoin = newCoin;
         localStorage.setItem('whaleflow_current_coin', newCoin);
 
-        // Set coin-specific thresholds (check localStorage first)
-        const storedThreshold = localStorage.getItem(`whaleflow_threshold_${newCoin}`);
-        if (storedThreshold) {
-            this.whaleThreshold = parseFloat(storedThreshold);
-        } else if (newCoin === 'BTC') {
-            this.whaleThreshold = 50000;
-        } else if (newCoin === 'ETH') {
-            this.whaleThreshold = 10000;
-        } else if (newCoin === 'PAXG') {
-            this.whaleThreshold = 10;
-        } else if (newCoin === 'XRP') {
-            this.whaleThreshold = 50;
-        } else {
-            this.whaleThreshold = 100;
-        }
-        if (this.elements.whaleThreshold) {
-            this.elements.whaleThreshold.value = this.whaleThreshold;
-        }
+        // Load specific threshold for this coin
+        this._loadCoinThreshold(newCoin);
+
         this.orderbook = { bids: [], asks: [] };
         this.fundingData = null;
 
