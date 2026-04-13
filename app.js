@@ -626,6 +626,7 @@ class WhaleFlowDashboard {
         this.fundingData = null;
 
         this.loadCoinData(newCoin);
+        this.reprocessTrades();
 
         document.querySelectorAll('.coin-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.coin === newCoin);
@@ -2435,30 +2436,22 @@ class WhaleFlowDashboard {
                 // Get the specific threshold for this coin to ensure Historical/Current consistency
                 const coinThreshold = parseInt(localStorage.getItem(`whaleflow_threshold_${coin}`) || '50000', 10);
                 
-                // Recalculate Historical totals based on local threshold
-                let histBuyV = 0, histSellV = 0, histBuyC = 0, histSellC = 0;
-                d.whaleTrades.forEach(t => {
-                    if (t.value >= coinThreshold) {
-                        if (t.side === 'BUY') { histBuyV += t.value; histBuyC++; }
-                        else { histSellV += t.value; histSellC++; }
-                    }
-                });
-                d.totalBuyVolume = histBuyV;
-                d.totalSellVolume = histSellV;
-                d.buyCount = histBuyC;
-                d.sellCount = histSellC;
+                // Only initialize from server totals if we have no local accumulation for this coin yet
+                if (d.totalBuyVolume === 0 && d.totalSellVolume === 0) {
+                    d.totalBuyVolume = serverCoin.total_buy_vol;
+                    d.totalSellVolume = serverCoin.total_sell_vol;
+                    d.buyCount = serverCoin.buy_count;
+                    d.sellCount = serverCoin.sell_count;
+                }
 
-                // Re-hydrate the current accumulation seamlessly without double-counting
+                // Stitching logic for Current mode — seamlessly adds only NEW trades from the server buffer
                 if (this.currentModeClearTime > 0) {
-                    d.currentBuyVolume = 0; d.currentSellVolume = 0;
-                    d.currentBuyCount = 0; d.currentSellCount = 0;
-
                     // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
                     const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
                     
                     for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
                         const t = d.whaleTrades[i];
-                        // BOTH time AND threshold must match for Current mode
+                        // BOTH time AND threshold must match for Current mode stitching
                         if (t.time > stitchTime && t.value >= coinThreshold) {
                             if (t.side === 'BUY') {
                                 d.currentBuyVolume += t.value;
