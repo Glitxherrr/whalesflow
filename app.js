@@ -15,8 +15,13 @@ class WhaleFlowDashboard {
     constructor() {
         // State
         this.ws = null;
+        this.localWsActive = false;
         this.currentCoin = 'BTC';
         this.whaleThreshold = 50000;
+        
+        // Backend default thresholds (used to decide when to trust server totals vs re-process buffer)
+        this.backendThresholds = { 'BTC': 50000, 'ETH': 10000, 'SOL': 100, 'PAXG': 10, 'XRP': 50 };
+
         this.orderbook = { bids: [], asks: [] };
         this.fundingData = null;
         this.assetIndex = -1;
@@ -2156,9 +2161,12 @@ class WhaleFlowDashboard {
         }).join('');
     }
 
-    reprocessTrades() {
-        const d = this.getCoinData(this.currentCoin);
-        const threshold = this.whaleThreshold;
+    reprocessTrades(coin = null) {
+        const targetCoin = coin || this.currentCoin;
+        const d = this.getCoinData(targetCoin);
+        const threshold = (targetCoin === this.currentCoin) 
+            ? this.whaleThreshold 
+            : parseInt(localStorage.getItem(`whaleflow_threshold_${targetCoin}`) || '50000', 10);
 
         // Reset all accumulators
         d.totalBuyVolume = 0; d.totalSellVolume = 0;
@@ -2167,10 +2175,10 @@ class WhaleFlowDashboard {
         d.currentBuyCount = 0; d.currentSellCount = 0;
 
         d.whaleTrades.forEach(trade => {
-            // Only count trades that meet the CURRENT threshold
+            // Only count trades that meet the threshold for THIS coin
             if (trade.value < threshold) return;
 
-            // Historical totals (always)
+            // Historical totals
             if (trade.side === 'BUY') {
                 d.totalBuyVolume += trade.value;
                 d.buyCount++;
@@ -2179,7 +2187,7 @@ class WhaleFlowDashboard {
                 d.sellCount++;
             }
 
-            // Current mode totals (only trades after clear time)
+            // Current mode totals
             if (this.currentModeClearTime > 0 && trade.time >= this.currentModeClearTime) {
                 if (trade.side === 'BUY') {
                     d.currentBuyVolume += trade.value;
@@ -2191,11 +2199,14 @@ class WhaleFlowDashboard {
             }
         });
 
-        this.loadCoinData(this.currentCoin);
+        // Only update classes and UI if we reprocessed the ACTIVE coin
+        if (targetCoin === this.currentCoin) {
+            this.loadCoinData(targetCoin);
+            this.updateSummaryCards();
+            this.updateAnalytics();
+            this.renderTradesList();
+        }
         this._saveCurrentToStorage();
-        this.updateSummaryCards();
-        this.updateAnalytics();
-        this.renderTradesList();
     }
 
     // ==================== DATA VIEW MODE ====================
@@ -2435,13 +2446,19 @@ class WhaleFlowDashboard {
                 
                 // Get the specific threshold for this coin to ensure Historical/Current consistency
                 const coinThreshold = parseInt(localStorage.getItem(`whaleflow_threshold_${coin}`) || '50000', 10);
-                
-                // Only initialize from server totals if we have no local accumulation for this coin yet
-                if (d.totalBuyVolume === 0 && d.totalSellVolume === 0) {
+                const backendThresh = this.backendThresholds[coin] || 50000;
+
+                // MULTI-DEVICE SYNC: If we are at the backend's default threshold, trust the server's full totals.
+                // This ensures all devices see the same multi-hour history.
+                if (coinThreshold === backendThresh) {
                     d.totalBuyVolume = serverCoin.total_buy_vol;
                     d.totalSellVolume = serverCoin.total_sell_vol;
                     d.buyCount = serverCoin.buy_count;
                     d.sellCount = serverCoin.sell_count;
+                } else {
+                    // If at a custom threshold, re-calculate from the shared buffer.
+                    // This ensures Device A and Device B at $200k also match each other perfectly.
+                    this.reprocessTrades(coin);
                 }
 
                 // Stitching logic for Current mode — seamlessly adds only NEW trades from the server buffer
