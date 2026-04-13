@@ -338,8 +338,10 @@ class WhaleFlowDashboard {
         // Whale threshold
         this.elements.whaleThreshold.addEventListener('change', (e) => {
             const val = parseInt(e.target.value, 10);
-            if (val >= 1000) {
+            if (!isNaN(val)) {
                 this.whaleThreshold = val;
+                // Persist custom threshold for this specific coin
+                localStorage.setItem(`whaleflow_threshold_${this.currentCoin}`, val.toString());
                 this.reprocessTrades();
                 this.renderOrderbook();
                 this.showToast(`🐋 Whale threshold set to $${this.formatCompact(val)}`);
@@ -597,8 +599,11 @@ class WhaleFlowDashboard {
         this.currentCoin = newCoin;
         localStorage.setItem('whaleflow_current_coin', newCoin);
 
-        // Set coin-specific thresholds
-        if (newCoin === 'BTC') {
+        // Set coin-specific thresholds (check localStorage first)
+        const storedThreshold = localStorage.getItem(`whaleflow_threshold_${newCoin}`);
+        if (storedThreshold) {
+            this.whaleThreshold = parseFloat(storedThreshold);
+        } else if (newCoin === 'BTC') {
             this.whaleThreshold = 50000;
         } else if (newCoin === 'ETH') {
             this.whaleThreshold = 10000;
@@ -607,7 +612,6 @@ class WhaleFlowDashboard {
         } else if (newCoin === 'XRP') {
             this.whaleThreshold = 50;
         } else {
-            // SOL
             this.whaleThreshold = 100;
         }
         if (this.elements.whaleThreshold) {

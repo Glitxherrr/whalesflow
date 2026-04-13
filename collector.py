@@ -71,8 +71,8 @@ CONFIG = {
     'funding_poll_interval': 15,
     'signal_eval_interval': 15,
     'signal_initial_delay': 30,
-    'snapshot_interval': 300,
-    'snapshot_initial_delay': 300,
+    'snapshot_interval': 60,
+    'snapshot_initial_delay': 60,
     'pressure_interval': 30,
     'signal_decay_initiative': 300,
     'signal_decay_clustering': 180,
@@ -93,7 +93,7 @@ CONFIG = {
     'regime_hold_time': 900,
     'regime_thresholds': {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.35, 'XRP': 0.30, 'PAXG': 0.08},
     'snapshot_path': 'runtime/state_snapshot.json',
-    'max_trade_value': 500_000_000,
+    'max_trade_value': 100_000_000_000_000,
     'trade_time_tolerance_ms': 300_000,
     'dedupe_cache_size': 2000,
     'funding_history_maxlen': 6000,
@@ -228,7 +228,8 @@ class HyperliquidCollector:
         if self.running:
             return
         self.running = True
-        self.started_at = time.time()
+        if self.started_at is None:
+            self.started_at = time.time()
 
         # Graceful shutdown handlers (signal only works from main thread)
         try:
@@ -239,11 +240,14 @@ class HyperliquidCollector:
         atexit.register(self.shutdown)
 
         threading.Thread(target=self._run_ws, daemon=True, name='ws').start()
-        threading.Thread(target=self._run_ws_binance, daemon=True, name='ws_binance').start()
-        threading.Thread(target=self._run_ws_bybit, daemon=True, name='ws_bybit').start()
-        threading.Thread(target=self._run_ws_okx, daemon=True, name='ws_okx').start()
-        threading.Thread(target=self._run_ws_kraken, daemon=True, name='ws_kraken').start()
-        threading.Thread(target=self._run_ws_coinbase, daemon=True, name='ws_coinbase').start()
+        threading.Thread(target=self._run_ws_binance_spot, daemon=True, name='bin_spot').start()
+        threading.Thread(target=self._run_ws_binance_futures, daemon=True, name='bin_fut').start()
+        threading.Thread(target=self._run_ws_bybit_linear, daemon=True, name='byb_perp').start()
+        threading.Thread(target=self._run_ws_bybit_spot, daemon=True, name='byb_spot').start()
+        threading.Thread(target=self._run_ws_okx, daemon=True, name='okx').start()
+        threading.Thread(target=self._run_ws_kraken_spot, daemon=True, name='krk_spot').start()
+        threading.Thread(target=self._run_ws_kraken_futures, daemon=True, name='krk_fut').start()
+        threading.Thread(target=self._run_ws_coinbase, daemon=True, name='cb').start()
         threading.Thread(target=self._run_funding, daemon=True, name='funding').start()
         threading.Thread(target=self._run_snapshots, daemon=True, name='snapshots').start()
         threading.Thread(target=self._run_signals, daemon=True, name='signals').start()
@@ -296,6 +300,17 @@ class HyperliquidCollector:
             if not state or 'coins' not in state:
                 logger.warning("Snapshot file is empty or invalid")
                 return
+
+            # Restore system-level state
+            self.started_at = state.get('started_at', self.started_at)
+            self.last_funding_update = state.get('last_funding_update', self.last_funding_update)
+            self.last_trade_update = state.get('last_trade_update', self.last_trade_update)
+            self.exchange_status = state.get('exchange_status', self.exchange_status)
+            
+            # Restore log buffer
+            if state.get('log_buffer'):
+                _mh.buffer.clear()
+                _mh.buffer.extend(state['log_buffer'])
 
             with self._data_lock:
                 for coin in self.coins:
@@ -403,69 +418,84 @@ class HyperliquidCollector:
 
     # ==================== WEBSOCKET - Binance ====================
 
-    def _run_ws_binance(self):
+    def _run_ws_binance_spot(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         while self.running:
             try:
-                loop.run_until_complete(self._ws_loop_binance())
+                loop.run_until_complete(self._ws_loop_binance_spot())
             except Exception as e:
-                error_str = f"{type(e).__name__}: {str(e)}"
-                self.exchange_status['BIN']['connected'] = False
-                self.exchange_status['BIN']['last_error'] = error_str
-                
-                # Check for 451 in error to handle Streamlit Cloud block gracefully
-                if "451" in error_str or getattr(e, "status_code", None) == 451:
-                    logger.warning("Binance WS disabled for this host: HTTP 451 (Geo-blocked region).")
+                err = str(e)
+                if "451" in err:
+                    logger.warning("Binance Spot geo-blocked on this host.")
                     break
-                
-                logger.error(f"WS Binance connection error: {error_str}")
+                logger.error(f"WS Binance Spot error: {e}")
                 time.sleep(5)
 
-    async def _ws_loop_binance(self):
+    async def _ws_loop_binance_spot(self):
         streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
-        url = f"wss://stream.binance.us:9443/stream?streams={streams}"
+        url = f"wss://stream.binance.com:9443/stream?streams={streams}"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BIN']['connected'] = True
-            logger.info("WS Binance.US connected")
+            logger.info("WS Binance Spot connected")
             async for raw in ws:
                 try:
-                    msg = json.loads(raw)
-                    if 'data' in msg:
-                        data = msg['data']
-                        symbol = data['s']
-                        coin = symbol.replace('USDT', '')
-                        if coin not in self.coins:
-                            continue
-                        mapped_trade = {
-                            'coin': coin, 'px': data['p'], 'sz': data['q'],
-                            'side': 'S' if data['m'] else 'B',
-                            'time': data['T'], 'exchange': 'BIN'
-                        }
-                        self._process_trades([mapped_trade])
-                        self.exchange_status['BIN']['last_msg'] = time.time()
-                except Exception:
-                    logger.warning("WS Binance parse error", exc_info=True)
+                    data = json.loads(raw)['data']
+                    self._process_external_trade({
+                        'coin': data['s'].replace('USDT', ''),
+                        'px': float(data['p']), 'sz': float(data['q']),
+                        'side': 'B' if not data['m'] else 'S',
+                        'time': int(data['E']), 'exchange': 'BIN_SPOT'
+                    })
+                except Exception: pass
+
+    def _run_ws_binance_futures(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_binance_futures())
+            except Exception as e:
+                err = str(e)
+                if "451" in err:
+                    logger.warning("Binance Futures geo-blocked on this host.")
+                    break
+                logger.error(f"WS Binance Futures error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_binance_futures(self):
+        streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
+        url = f"wss://fstream.binance.com/stream?streams={streams}"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            logger.info("WS Binance Futures connected")
+            async for raw in ws:
+                try:
+                    data = json.loads(raw)['data']
+                    self._process_external_trade({
+                        'coin': data['s'].replace('USDT', ''),
+                        'px': float(data['p']), 'sz': float(data['q']),
+                        'side': 'B' if not data['m'] else 'S',
+                        'time': int(data['E']), 'exchange': 'BIN_FUT'
+                    })
+                except Exception: pass
 
     # ==================== WEBSOCKET - Bybit ====================
 
-    def _run_ws_bybit(self):
+    def _run_ws_bybit_linear(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         while self.running:
             try:
-                loop.run_until_complete(self._ws_loop_bybit())
+                loop.run_until_complete(self._ws_loop_bybit_linear())
             except Exception as e:
-                logger.error(f"WS Bybit connection error: {e}")
-                self.exchange_status['BYB']['connected'] = False
-                self.exchange_status['BYB']['last_error'] = str(e)
+                logger.error(f"WS Bybit Linear error: {e}")
                 time.sleep(5)
 
-    async def _ws_loop_bybit(self):
+    async def _ws_loop_bybit_linear(self):
         url = "wss://stream.bybit.com/v5/public/linear"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BYB']['connected'] = True
-            logger.info("WS Bybit connected")
+            logger.info("WS Bybit Linear connected")
             args = [f"publicTrade.{coin}USDT" for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
             async for raw in ws:
@@ -487,6 +517,35 @@ class HyperliquidCollector:
                 except Exception:
                     logger.warning("WS Bybit parse error", exc_info=True)
 
+    def _run_ws_bybit_spot(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_bybit_spot())
+            except Exception as e:
+                logger.error(f"WS Bybit Spot error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_bybit_spot(self):
+        url = "wss://stream.bybit.com/v5/public/spot"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            logger.info("WS Bybit Spot connected")
+            args = [f"publicTrade.{coin}USDT" for coin in self.coins]
+            await ws.send(json.dumps({"op": "subscribe", "args": args}))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if 'data' in msg and isinstance(msg['data'], list):
+                        for t in msg['data']:
+                            coin = msg['topic'].split('.')[1].replace('USDT', '')
+                            self._process_external_trade({
+                                'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
+                                'side': 'B' if t['S'] == 'Buy' else 'S',
+                                'time': int(t['T']), 'exchange': 'BYB_SPOT'
+                            })
+                except Exception: pass
+
     # ==================== WEBSOCKET - OKX ====================
 
     def _run_ws_okx(self):
@@ -506,7 +565,11 @@ class HyperliquidCollector:
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['OKX']['connected'] = True
             logger.info("WS OKX connected")
-            args = [{"channel": "trades", "instId": f"{coin}-USDT-SWAP"} for coin in self.coins]
+            # Subscribe to both SWAP (Perps) and Spot
+            args = []
+            for coin in self.coins:
+                args.append({"channel": "trades", "instId": f"{coin}-USDT-SWAP"})
+                args.append({"channel": "trades", "instId": f"{coin}-USDT"})
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
             async for raw in ws:
                 try:
@@ -529,23 +592,21 @@ class HyperliquidCollector:
 
     # ==================== WEBSOCKET - Kraken ====================
 
-    def _run_ws_kraken(self):
+    def _run_ws_kraken_spot(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         while self.running:
             try:
-                loop.run_until_complete(self._ws_loop_kraken())
+                loop.run_until_complete(self._ws_loop_kraken_spot())
             except Exception as e:
-                logger.error(f"WS Kraken connection error: {e}")
-                self.exchange_status['KRK']['connected'] = False
-                self.exchange_status['KRK']['last_error'] = str(e)
+                logger.error(f"WS Kraken Spot error: {e}")
                 time.sleep(5)
 
-    async def _ws_loop_kraken(self):
+    async def _ws_loop_kraken_spot(self):
         url = "wss://ws.kraken.com/v2"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['KRK']['connected'] = True
-            logger.info("WS Kraken connected")
+            logger.info("WS Kraken Spot connected")
             args = [f"{coin}/USD" for coin in self.coins]
             await ws.send(json.dumps({
                 "method": "subscribe",
@@ -570,6 +631,39 @@ class HyperliquidCollector:
                             self.exchange_status['KRK']['last_msg'] = time.time()
                 except Exception:
                     logger.warning("WS Kraken parse error", exc_info=True)
+
+    def _run_ws_kraken_futures(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_kraken_futures())
+            except Exception as e:
+                logger.error(f"WS Kraken Futures error: {e}")
+                time.sleep(5)
+
+    async def _ws_loop_kraken_futures(self):
+        url = "wss://futures.kraken.com/ws/v1"
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            logger.info("WS Kraken Futures connected")
+            # Kraken Futures symbols are like pi_btcusd
+            args = [f"pi_{coin.lower()}usd" for coin in self.coins]
+            await ws.send(json.dumps({
+                "event": "subscribe",
+                "feed": "trade",
+                "product_ids": args
+            }))
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                    if msg.get('feed') == 'trade' and 'qty' in msg:
+                        coin = msg['product_id'].split('_')[1].replace('usd', '').upper()
+                        self._process_external_trade({
+                            'coin': coin, 'px': float(msg['price']), 'sz': float(msg['qty']),
+                            'side': 'B' if msg['side'] == 'buy' else 'S',
+                            'time': int(msg['time']), 'exchange': 'KRK_FUT'
+                        })
+                except Exception: pass
 
     # ==================== WEBSOCKET - Coinbase ====================
 
