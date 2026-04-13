@@ -2157,17 +2157,44 @@ class WhaleFlowDashboard {
 
     reprocessTrades() {
         const d = this.getCoinData(this.currentCoin);
+        const threshold = this.whaleThreshold;
+
+        // Reset all accumulators
         d.totalBuyVolume = 0; d.totalSellVolume = 0;
         d.buyCount = 0; d.sellCount = 0;
+        d.currentBuyVolume = 0; d.currentSellVolume = 0;
+        d.currentBuyCount = 0; d.currentSellCount = 0;
 
         d.whaleTrades.forEach(trade => {
-            if (trade.side === 'BUY') { d.totalBuyVolume += trade.value; d.buyCount++; }
-            else { d.totalSellVolume += trade.value; d.sellCount++; }
+            // Only count trades that meet the CURRENT threshold
+            if (trade.value < threshold) return;
+
+            // Historical totals (always)
+            if (trade.side === 'BUY') {
+                d.totalBuyVolume += trade.value;
+                d.buyCount++;
+            } else {
+                d.totalSellVolume += trade.value;
+                d.sellCount++;
+            }
+
+            // Current mode totals (only trades after clear time)
+            if (this.currentModeClearTime > 0 && trade.time >= this.currentModeClearTime) {
+                if (trade.side === 'BUY') {
+                    d.currentBuyVolume += trade.value;
+                    d.currentBuyCount++;
+                } else {
+                    d.currentSellVolume += trade.value;
+                    d.currentSellCount++;
+                }
+            }
         });
 
         this.loadCoinData(this.currentCoin);
+        this._saveCurrentToStorage();
         this.updateSummaryCards();
         this.updateAnalytics();
+        this.renderTradesList();
     }
 
     // ==================== DATA VIEW MODE ====================
@@ -2222,12 +2249,18 @@ class WhaleFlowDashboard {
 
     getDisplayTrades() {
         const d = this.getCoinData(this.currentCoin);
+        const threshold = this.whaleThreshold;
+        
+        // Always filter by current threshold for consistency
+        const meetThreshold = d.whaleTrades.filter(t => t.value >= threshold);
+
         if (this.dataViewMode === 'Historical') {
-            return d.whaleTrades;
+            return meetThreshold;
         }
-        // Current mode: only trades after clearTime
+        
+        // Current mode: only trades after clearTime (already filtered by threshold above)
         if (this.currentModeClearTime <= 0) return [];
-        return d.whaleTrades.filter(t => t.time >= this.currentModeClearTime);
+        return meetThreshold.filter(t => t.time >= this.currentModeClearTime);
     }
 
     getDisplayVolumes() {
@@ -2398,19 +2431,35 @@ class WhaleFlowDashboard {
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
                 // Keep up to 500 trades to ensure Current mode can reconstruct its volume
                 d.whaleTrades = serverCoin.whale_trades.slice(0, 500);
-                d.totalBuyVolume = serverCoin.total_buy_vol;
-                d.totalSellVolume = serverCoin.total_sell_vol;
-                d.buyCount = serverCoin.buy_count;
-                d.sellCount = serverCoin.sell_count;
+                
+                // Get the specific threshold for this coin to ensure Historical/Current consistency
+                const coinThreshold = parseInt(localStorage.getItem(`whaleflow_threshold_${coin}`) || '50000', 10);
+                
+                // Recalculate Historical totals based on local threshold
+                let histBuyV = 0, histSellV = 0, histBuyC = 0, histSellC = 0;
+                d.whaleTrades.forEach(t => {
+                    if (t.value >= coinThreshold) {
+                        if (t.side === 'BUY') { histBuyV += t.value; histBuyC++; }
+                        else { histSellV += t.value; histSellC++; }
+                    }
+                });
+                d.totalBuyVolume = histBuyV;
+                d.totalSellVolume = histSellV;
+                d.buyCount = histBuyC;
+                d.sellCount = histSellC;
 
                 // Re-hydrate the current accumulation seamlessly without double-counting
                 if (this.currentModeClearTime > 0) {
+                    d.currentBuyVolume = 0; d.currentSellVolume = 0;
+                    d.currentBuyCount = 0; d.currentSellCount = 0;
+
                     // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
                     const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
                     
                     for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
                         const t = d.whaleTrades[i];
-                        if (t.time > stitchTime) {
+                        // BOTH time AND threshold must match for Current mode
+                        if (t.time > stitchTime && t.value >= coinThreshold) {
                             if (t.side === 'BUY') {
                                 d.currentBuyVolume += t.value;
                                 d.currentBuyCount++;
