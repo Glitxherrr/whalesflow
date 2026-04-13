@@ -802,13 +802,16 @@ class HyperliquidCollector:
                     if isinstance(msg, dict) and msg.get('event') == 'subscribed':
                         sym = msg['symbol'].replace('t', '').replace('UST', '').replace('F0:', '').replace('0', '')
                         chan_map[msg['chanId']] = sym
-                    elif isinstance(msg, list) and len(msg) >= 3 and msg[1] == 'te':
+                    elif isinstance(msg, list) and len(msg) >= 3 and msg[1] in ['te', 'tu']:
                         chan_id = msg[0]
                         coin = chan_map.get(chan_id, '?')
                         t = msg[2]
+                        # Bitfinex trade array: [ID, TIME, AMOUNT, PRICE]
+                        # Positive amount = buy, Negative = sell
+                        amt = float(t[2])
                         self._process_trades([{
-                            'coin': coin, 'px': float(t[3]), 'sz': abs(float(t[2])),
-                            'side': 'B' if float(t[2]) > 0 else 'S',
+                            'coin': coin, 'px': float(t[3]), 'sz': abs(amt),
+                            'side': 'B' if amt > 0 else 'S',
                             'time': int(t[1]), 'exchange': 'BFX'
                         }])
                 except Exception: pass
@@ -827,8 +830,10 @@ class HyperliquidCollector:
                 time.sleep(10)
 
     async def _ws_loop_bitget(self):
-        url = "wss://ws.bitget.com/v2/ws/public"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+        # Using alternate domain to try and bypass regional blocks
+        url = "wss://ws.bitgetapi.com/v2/ws/public"
+        headers = {"Origin": "https://www.bitget.com"}
+        async with websockets.connect(url, extra_headers=headers, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BGT']['connected'] = True
             args = [{"instType": "SPOT", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
@@ -857,8 +862,10 @@ class HyperliquidCollector:
                 time.sleep(10)
 
     async def _ws_loop_bitget_futures(self):
-        url = "wss://ws.bitget.com/v2/ws/public"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+        # Using alternate domain to try and bypass regional blocks
+        url = "wss://ws.bitgetapi.com/v2/ws/public"
+        headers = {"Origin": "https://www.bitget.com"}
+        async with websockets.connect(url, extra_headers=headers, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BGT']['connected'] = True
             args = [{"instType": "usdt-futures", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))

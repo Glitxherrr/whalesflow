@@ -297,6 +297,7 @@ class WhaleFlowDashboard {
             'sysUptime', 'sysBackend', 'sysLastFunding', 'sysLastTrade', 'sysSnapshot',
             'exchangeStatusGrid',
             'exchHL', 'exchBIN', 'exchBYB', 'exchOKX', 'exchKRK', 'exchCB',
+            'exchDRB', 'exchBFX', 'exchBGT', 'exchMEXC', 'exchUPB', 'exchGATE',
 
             // Log Sidebar
             'logSidebar', 'logSidebarTab', 'logSidebarContent', 'logBadge',
@@ -3015,7 +3016,7 @@ class WhaleFlowDashboard {
 
         // Exchange status dots
         const now = Date.now() / 1000;
-        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB'].forEach(ex => {
+        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'].forEach(ex => {
             const el = this.elements['exch' + ex];
             if (!el) return;
             const info = (s.exchange_status || {})[ex];
