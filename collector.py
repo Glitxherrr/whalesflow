@@ -857,9 +857,10 @@ class HyperliquidCollector:
                 time.sleep(10)
 
     async def _ws_loop_bitget_futures(self):
-        url = "wss://ws.bitget.com/v2/ws/market"
+        url = "wss://ws.bitget.com/v2/ws/public"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            args = [{"instType": "FUTURES", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
+            self.exchange_status['BGT']['connected'] = True
+            args = [{"instType": "usdt-futures", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
             await ws.send(json.dumps({"op": "subscribe", "args": args}))
             async for raw in ws:
                 try:
@@ -916,8 +917,9 @@ class HyperliquidCollector:
                 time.sleep(10)
 
     async def _ws_loop_mexc_futures(self):
-        url = "wss://contract.mexc.com/ws"
+        url = "wss://contract.mexc.com/edge"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['MEXC']['connected'] = True
             for coin in self.coins:
                 await ws.send(json.dumps({"method": "sub.deal", "param": {"symbol": f"{coin}_USDT"}}))
             async for raw in ws:
