@@ -464,6 +464,7 @@ class HyperliquidCollector:
                         'side': 'B' if not data['m'] else 'S',
                         'time': int(data['E']), 'exchange': 'BIN_SPOT'
                     }])
+                    self.exchange_status['BIN']['last_msg'] = time.time()
                 except Exception: pass
 
     def _run_ws_binance_futures(self):
@@ -484,6 +485,7 @@ class HyperliquidCollector:
         streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
         url = f"wss://fstream.binance.com/stream?streams={streams}"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+            self.exchange_status['BIN']['connected'] = True
             logger.info("WS Binance Futures connected")
             async for raw in ws:
                 try:
@@ -494,6 +496,7 @@ class HyperliquidCollector:
                         'side': 'B' if not data['m'] else 'S',
                         'time': int(data['E']), 'exchange': 'BIN_FUT'
                     }])
+                    self.exchange_status['BIN']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Bybit ====================
@@ -506,6 +509,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_bybit_linear())
             except Exception as e:
                 logger.error(f"WS Bybit Linear error: {e}")
+                self.exchange_status['BYB']['connected'] = False
                 time.sleep(5)
 
     async def _ws_loop_bybit_linear(self):
@@ -542,6 +546,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_bybit_spot())
             except Exception as e:
                 logger.error(f"WS Bybit Spot error: {e}")
+                self.exchange_status['BYB']['connected'] = False
                 time.sleep(5)
 
     async def _ws_loop_bybit_spot(self):
@@ -561,6 +566,7 @@ class HyperliquidCollector:
                                 'side': 'B' if t['S'] == 'Buy' else 'S',
                                 'time': int(t['T']), 'exchange': 'BYB_SPOT'
                             }])
+                            self.exchange_status['BYB']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - OKX ====================
@@ -617,6 +623,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_kraken_spot())
             except Exception as e:
                 logger.error(f"WS Kraken Spot error: {e}")
+                self.exchange_status['KRK']['connected'] = False
                 time.sleep(5)
 
     async def _ws_loop_kraken_spot(self):
@@ -657,6 +664,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_kraken_futures())
             except Exception as e:
                 logger.error(f"WS Kraken Futures error: {e}")
+                self.exchange_status['KRK']['connected'] = False
                 time.sleep(5)
 
     async def _ws_loop_kraken_futures(self):
@@ -680,6 +688,7 @@ class HyperliquidCollector:
                             'side': 'B' if msg['side'] == 'buy' else 'S',
                             'time': int(msg['time']), 'exchange': 'KRK_FUT'
                         }])
+                        self.exchange_status['KRK']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Coinbase ====================
@@ -712,16 +721,21 @@ class HyperliquidCollector:
             async for raw in ws:
                 try:
                     msg = json.loads(raw)
-                    if msg.get('channel') == 'market_trades' and 'trades' in msg:
-                        for t in msg['trades']:
-                            coin = t['product_id'].split('-')[0]
-                            dtime = datetime.fromisoformat(t['time'].replace('Z', '+00:00'))
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
-                                'side': 'B' if t['side'] == 'buy' else 'S',
-                                'time': int(dtime.timestamp() * 1000), 'exchange': 'CB'
-                            }])
-                            self.exchange_status['CB']['last_msg'] = time.time()
+                    if msg.get('channel') == 'market_trades' and 'events' in msg:
+                        for event in msg['events']:
+                            if event.get('type') != 'update' or 'trades' not in event:
+                                continue
+                            for t in event['trades']:
+                                coin = t['product_id'].split('-')[0]
+                                if coin not in self.coins:
+                                    continue
+                                dtime = datetime.fromisoformat(t['time'].replace('Z', '+00:00'))
+                                self._process_trades([{
+                                    'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
+                                    'side': 'B' if t['side'] == 'BUY' else 'S',
+                                    'time': int(dtime.timestamp() * 1000), 'exchange': 'CB'
+                                }])
+                                self.exchange_status['CB']['last_msg'] = time.time()
                 except Exception:
                     logger.warning("WS Coinbase parse error", exc_info=True)
 
@@ -735,6 +749,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_deribit())
             except Exception as e:
                 logger.error(f"WS Deribit error: {e}")
+                self.exchange_status['DRB']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_deribit(self):
@@ -762,6 +777,7 @@ class HyperliquidCollector:
                                 'side': 'B' if t['direction'] == 'buy' else 'S',
                                 'time': int(t['timestamp']), 'exchange': 'DRB_FUT'
                             }])
+                            self.exchange_status['DRB']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Bitfinex ====================
@@ -777,6 +793,7 @@ class HyperliquidCollector:
                     logger.warning("Bitfinex geo-blocked.")
                     break
                 logger.error(f"WS Bitfinex error: {e}")
+                self.exchange_status['BFX']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_bitfinex(self):
@@ -800,7 +817,15 @@ class HyperliquidCollector:
                 try:
                     msg = json.loads(raw)
                     if isinstance(msg, dict) and msg.get('event') == 'subscribed':
-                        sym = msg['symbol'].replace('t', '').replace('UST', '').replace('F0:', '').replace('0', '')
+                        # Extract coin from symbols like tBTCUST, tETHF0:UST0
+                        sym = msg['symbol']
+                        if sym.startswith('t'):
+                            sym = sym[1:]  # Remove leading 't'
+                        # Remove futures/USDT suffixes
+                        for suffix in ['F0:UST0', 'F0:USTF0', 'UST', 'USD']:
+                            if suffix in sym:
+                                sym = sym.split(suffix)[0]
+                                break
                         chan_map[msg['chanId']] = sym
                     elif isinstance(msg, list) and len(msg) >= 3 and msg[1] in ['te', 'tu']:
                         chan_id = msg[0]
@@ -814,6 +839,7 @@ class HyperliquidCollector:
                             'side': 'B' if amt > 0 else 'S',
                             'time': int(t[1]), 'exchange': 'BFX'
                         }])
+                        self.exchange_status['BFX']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Bitget ====================
@@ -853,6 +879,7 @@ class HyperliquidCollector:
                                 'side': 'B' if t['side'] == 'buy' else 'S',
                                 'time': int(t['ts']), 'exchange': 'BGT_SPOT'
                             }])
+                            self.exchange_status['BGT']['last_msg'] = time.time()
                 except Exception: pass
 
     def _run_ws_bitget_futures(self):
@@ -889,6 +916,7 @@ class HyperliquidCollector:
                                 'side': 'B' if t['side'] == 'buy' else 'S',
                                 'time': int(t['ts']), 'exchange': 'BGT_FUT'
                             }])
+                            self.exchange_status['BGT']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - MEXC ====================
@@ -901,6 +929,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_mexc())
             except Exception as e:
                 logger.error(f"WS MEXC error: {e}")
+                self.exchange_status['MEXC']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_mexc(self):
@@ -920,6 +949,7 @@ class HyperliquidCollector:
                                 'side': 'B' if t['S'] == 1 else 'S',
                                 'time': int(t['t']), 'exchange': 'MEXC'
                             }])
+                            self.exchange_status['MEXC']['last_msg'] = time.time()
                 except Exception: pass
 
     def _run_ws_mexc_futures(self):
@@ -930,6 +960,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_mexc_futures())
             except Exception as e:
                 logger.error(f"WS MEXC Futures error: {e}")
+                self.exchange_status['MEXC']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_mexc_futures(self):
@@ -949,6 +980,7 @@ class HyperliquidCollector:
                             'side': 'B' if d['T'] == 1 else 'S',
                             'time': int(d['t']), 'exchange': 'MEXC_FUT'
                         }])
+                        self.exchange_status['MEXC']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Upbit ====================
@@ -961,6 +993,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_upbit())
             except Exception as e:
                 logger.error(f"WS Upbit error: {e}")
+                self.exchange_status['UPB']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_upbit(self):
@@ -982,6 +1015,7 @@ class HyperliquidCollector:
                         'side': 'B' if msg['ask_bid'] == 'BID' else 'S',
                         'time': int(msg['trade_timestamp']), 'exchange': 'UPB'
                     }])
+                    self.exchange_status['UPB']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== WEBSOCKET - Gate.io ====================
@@ -994,6 +1028,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_gate())
             except Exception as e:
                 logger.error(f"WS Gate error: {e}")
+                self.exchange_status['GATE']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_gate(self):
@@ -1016,6 +1051,7 @@ class HyperliquidCollector:
                             'side': 'B' if t['side'] == 'buy' else 'S',
                             'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE'
                         }])
+                        self.exchange_status['GATE']['last_msg'] = time.time()
                 except Exception: pass
 
     def _run_ws_gate_futures(self):
@@ -1026,6 +1062,7 @@ class HyperliquidCollector:
                 loop.run_until_complete(self._ws_loop_gate_futures())
             except Exception as e:
                 logger.error(f"WS Gate Futures error: {e}")
+                self.exchange_status['GATE']['connected'] = False
                 time.sleep(10)
 
     async def _ws_loop_gate_futures(self):
@@ -1047,6 +1084,7 @@ class HyperliquidCollector:
                                 'side': 'B' if float(t['size']) > 0 else 'S',
                                 'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE_FUT'
                             }])
+                            self.exchange_status['GATE']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== TRADE PROCESSING ====================
@@ -1748,6 +1786,8 @@ class HyperliquidCollector:
                     'signals': d['signals'],
                     'alert_level': d['alert_level'],
                     'alert_label': d['alert_label'],
+                    'current_bucket_buy': d['current_bucket_buy'],
+                    'current_bucket_sell': d['current_bucket_sell'],
                     'abs': {
                         'snapshots_count': len(d['abs_snapshots']),
                         'detected': d['abs_detected'],

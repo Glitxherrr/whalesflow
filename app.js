@@ -1207,14 +1207,16 @@ class WhaleFlowDashboard {
                 };
 
                 this._applyCoinMeta(coin, coinMeta, now);
+
+                // Push funding history for ALL coins (not just active)
+                const fundingStore = this.getCoinData(coin);
+                fundingStore.fundingHistory.push({ time: now, funding: coinMeta.funding });
+                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
             });
 
             const activeMeta = this.allCoinMeta.get(this.currentCoin);
             if (activeMeta) {
                 this.fundingData = { ...activeMeta };
-                const fundingStore = this.getCoinData(this.currentCoin);
-                fundingStore.fundingHistory.push({ time: now, funding: activeMeta.funding });
-                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
                 this.updateFundingUI();
                 this.updateMarketDataUI();
                 this.renderRegime();
@@ -1755,7 +1757,7 @@ class WhaleFlowDashboard {
             el.innerHTML = `&uarr; ${label} +${formatted(changeValue)}`;
         } else {
             el.classList.add('down');
-            el.innerHTML = `&darr; ${label} ${formatted(Math.abs(changeValue))}`;
+            el.innerHTML = `&darr; ${label} -${formatted(Math.abs(changeValue))}`;
         }
     }
 
@@ -2455,6 +2457,14 @@ class WhaleFlowDashboard {
                 d.pressureHistory = serverCoin.pressure_history;
             }
 
+            // Current volume bucket (needed for regime + volume climax signal)
+            if (serverCoin.current_bucket_buy !== undefined) {
+                d.currentBucketBuy = serverCoin.current_bucket_buy;
+            }
+            if (serverCoin.current_bucket_sell !== undefined) {
+                d.currentBucketSell = serverCoin.current_bucket_sell;
+            }
+
             // Absorption state
             if (serverCoin.abs) {
                 const sa = serverCoin.abs;
@@ -2533,23 +2543,6 @@ class WhaleFlowDashboard {
                         price: p.price
                     }));
                 }
-            }
-
-            // Historical Data (Funding & Market)
-            if (serverCoin.funding_history) {
-                d.fundingHistory = serverCoin.funding_history.map(h => ({
-                    time: h.time * 1000,
-                    funding: h.funding
-                }));
-            }
-            if (serverCoin.market_history) {
-                const mh = serverCoin.market_history;
-                d.marketHistory = mh.map(m => ({
-                    time: m.time * 1000,
-                    markPx: m.mark_px,
-                    openInterest: m.open_interest,
-                    dayVolume: m.day_volume
-                }));
             }
         });
 
