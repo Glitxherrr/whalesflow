@@ -825,7 +825,11 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_bitget())
             except Exception as e:
-                if "451" in str(e): break
+                err_str = str(e).lower()
+                if "close frame" in err_str or "rejected" in err_str or "403" in err_str:
+                    logger.warning("Bitget Spot: Regional Block detected (Streamlit Cloud US). Connection suspended.")
+                    self.exchange_status['BGT']['last_error'] = "Geo-Blocked"
+                    break # Stop trying if blocked
                 logger.error(f"WS Bitget error: {e}")
                 time.sleep(10)
 
@@ -857,7 +861,10 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_bitget_futures())
             except Exception as e:
-                if "451" in str(e): break
+                err_str = str(e).lower()
+                if "close frame" in err_str or "rejected" in err_str or "403" in err_str:
+                    logger.warning("Bitget Futures: Regional Block detected. Connection suspended.")
+                    break
                 logger.error(f"WS Bitget Futures error: {e}")
                 time.sleep(10)
 
