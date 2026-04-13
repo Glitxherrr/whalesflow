@@ -1831,16 +1831,22 @@ class HyperliquidCollector:
                     if data.get('method') == 'ping':
                         await websocket.send(json.dumps({'channel': 'pong'}))
                     elif data.get('method') == 'clear_current':
+                        clear_time = int(time.time() * 1000)
                         with self._data_lock:
                             for c in self.coins:
                                 self.data[c]['current_buy_vol'] = 0.0
                                 self.data[c]['current_sell_vol'] = 0.0
                                 self.data[c]['current_buy_count'] = 0
                                 self.data[c]['current_sell_count'] = 0
+                        # Synchronize all connected devices
+                        await self._broadcast_local(json.dumps({
+                            'channel': 'all_clients_clear',
+                            'clear_time': clear_time
+                        }))
                 except Exception:
                     pass
         except Exception:
-            pass  # Client disconnected â€” normal for Streamlit iframes
+            pass  # Client disconnected
         finally:
             self.local_clients.discard(websocket)
 

@@ -413,32 +413,14 @@ class WhaleFlowDashboard {
         // Clear Data button (in mode bar, Current mode only)
         if (this.elements.clearDataBtn) {
             this.elements.clearDataBtn.addEventListener('click', () => {
-                this.currentModeClearTime = Date.now();
-                this._saveModeToStorage();
-                
-                // Zero out accumulators for all coins natively in browser memory
-                this.coinDataStore.forEach(d => {
-                    d.currentBuyVolume = 0;
-                    d.currentSellVolume = 0;
-                    d.currentBuyCount = 0;
-                    d.currentSellCount = 0;
-                    d.lastTradeTime = this.currentModeClearTime;
-                });
-                this._saveCurrentToStorage();
-                
-                this.loadCoinData(this.currentCoin);
-
-                this.updateSummaryCards();
-                this.renderTradesList();
-                this.updateAnalytics();
-
-                // Update hint
-                const hint = document.getElementById('tfBarHint');
-                if (hint) {
-                    hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
+                // If connected to local backend, send a global clear signal
+                if (this.ws && this.ws.readyState === WebSocket.OPEN && !this.ws.url.includes('hyperliquid.xyz')) {
+                    this.ws.send(JSON.stringify({ method: 'clear_current' }));
+                } else {
+                    // Fallback for single-device offline mode
+                    this.currentModeClearTime = Date.now();
+                    this._performGlobalClear();
                 }
-
-                this.showToast('Data cleared - tracking from now');
             });
         }
 
@@ -858,7 +840,40 @@ class WhaleFlowDashboard {
                     this._renderLogSidebar();
                 }
                 break;
+            case 'all_clients_clear':
+                this.currentModeClearTime = msg.clear_time || Date.now();
+                this._performGlobalClear();
+                break;
         }
+    }
+
+    /** Reset local accumulators and update UI after a global clear signal */
+    _performGlobalClear() {
+        this._saveModeToStorage();
+        
+        // Zero out accumulators for all coins natively in browser memory
+        this.coinDataStore.forEach(d => {
+            d.currentBuyVolume = 0;
+            d.currentSellVolume = 0;
+            d.currentBuyCount = 0;
+            d.currentSellCount = 0;
+            d.lastTradeTime = this.currentModeClearTime;
+        });
+        this._saveCurrentToStorage();
+        
+        this.loadCoinData(this.currentCoin);
+
+        this.updateSummaryCards();
+        this.renderTradesList();
+        this.updateAnalytics();
+
+        // Update hint
+        const hint = document.getElementById('tfBarHint');
+        if (hint) {
+            hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
+        }
+
+        this.showToast('Data cleared - synchronization active');
     }
 
 
@@ -2428,6 +2443,11 @@ class WhaleFlowDashboard {
      */
     loadServerState(state) {
         if (!state || !state.coins) return;
+
+        // MULTI-DEVICE SYNC: Default session start to server start if not manually cleared
+        if (this.currentModeClearTime === 0 && state.started_at) {
+            this.currentModeClearTime = state.started_at * 1000;
+        }
 
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
