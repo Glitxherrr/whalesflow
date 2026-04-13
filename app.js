@@ -2422,12 +2422,45 @@ class WhaleFlowDashboard {
     // ==================== SERVER STATE HYDRATION ====================
 
     /**
+     * Resets all session-local data for a fresh start (e.g. after server reboot)
+     */
+    forceGlobalReset(startTime) {
+        console.warn(`🧹 Global Reset: Syncing all devices to new server session (${new Date(startTime).toLocaleString()})`);
+        
+        this.currentModeClearTime = startTime;
+        localStorage.setItem('whaleflow_clearTime', startTime.toString());
+
+        this.coinDataStore.forEach(d => {
+            d.currentBuyVolume = 0;
+            d.currentSellVolume = 0;
+            d.currentBuyCount = 0;
+            d.currentSellCount = 0;
+            d.lastTradeTime = startTime;
+        });
+
+        this._saveCurrentToStorage();
+        this.showToast("🔄 Server Rebooted: Syncing all devices to new session", 5000);
+        
+        this._applyInitialMode(); // Update clear button visibility and hints
+    }
+
+    /**
      * Load pre-accumulated state from the Python backend.
      * Called on first load when deployed on Streamlit.
      * This lets users see historical data instantly without waiting.
      */
     loadServerState(state) {
         if (!state || !state.coins) return;
+
+        const serverStartedAt = state.started_at ? (state.started_at * 1000) : 0; // Backend is in seconds
+
+        // REBOOT DETECTION: If the server started AFTER our last known session, it's a reboot.
+        // This forces all devices (phones, PCs, etc) to reset their 'Current' flows together.
+        const lastKnownStart = localStorage.getItem('whaleflow_lastServerStart');
+        if (lastKnownStart && serverStartedAt > parseInt(lastKnownStart, 10)) {
+            this.forceGlobalReset(serverStartedAt);
+        }
+        localStorage.setItem('whaleflow_lastServerStart', serverStartedAt.toString());
 
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
