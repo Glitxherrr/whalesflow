@@ -138,8 +138,6 @@ class HyperliquidCollector:
         self.running = False
         self.connected = False
         self.started_at = None
-        self.last_clear_at = None
-        self.active_thresholds = self.whale_thresholds.copy()
 
         # Exchange health tracking
         self.exchanges = [
@@ -323,7 +321,6 @@ class HyperliquidCollector:
             self.started_at = state.get('started_at', self.started_at)
             self.last_funding_update = state.get('last_funding_update', self.last_funding_update)
             self.last_trade_update = state.get('last_trade_update', self.last_trade_update)
-            self.last_clear_at = state.get('last_clear_at', self.last_clear_at)
             if 'exchange_status' in state:
                 self.exchange_status.update(state['exchange_status'])
             
@@ -1759,7 +1756,6 @@ class HyperliquidCollector:
                 'uptime_seconds': time.time() - self.started_at if self.started_at else 0,
                 'last_funding_update': self.last_funding_update,
                 'last_trade_update': self.last_trade_update,
-                'last_clear_at': self.last_clear_at,
                 'snapshot_loaded': self.snapshot_loaded,
                 'exchange_status': self.exchange_status,
                 'log_buffer': _mh.get_entries(),
@@ -1835,35 +1831,16 @@ class HyperliquidCollector:
                     if data.get('method') == 'ping':
                         await websocket.send(json.dumps({'channel': 'pong'}))
                     elif data.get('method') == 'clear_current':
-                        clear_time = int(time.time() * 1000)
-                        self.last_clear_at = clear_time
                         with self._data_lock:
                             for c in self.coins:
                                 self.data[c]['current_buy_vol'] = 0.0
                                 self.data[c]['current_sell_vol'] = 0.0
                                 self.data[c]['current_buy_count'] = 0
                                 self.data[c]['current_sell_count'] = 0
-                        # Synchronize all connected devices
-                        await self._broadcast_local(json.dumps({
-                            'channel': 'all_clients_clear',
-                            'clear_time': clear_time
-                        }))
-                    elif data.get('method') == 'update_threshold':
-                        coin = data.get('coin')
-                        val = data.get('threshold')
-                        if coin and val:
-                            self.active_thresholds[coin] = float(val)
-                            # Broadcast to others
-                            await self._broadcast_local(json.dumps({
-                                'channel': 'threshold_update',
-                                'coin': coin,
-                                'threshold': val
-                            }))
-                            logger.info(f"Global threshold updated: {coin} -> {val}")
                 except Exception:
                     pass
         except Exception:
-            pass  # Client disconnected
+            pass  # Client disconnected â€” normal for Streamlit iframes
         finally:
             self.local_clients.discard(websocket)
 
