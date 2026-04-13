@@ -15,13 +15,8 @@ class WhaleFlowDashboard {
     constructor() {
         // State
         this.ws = null;
-        this.localWsActive = false;
         this.currentCoin = 'BTC';
         this.whaleThreshold = 50000;
-        
-        // Backend default thresholds (used to decide when to trust server totals vs re-process buffer)
-        this.backendThresholds = { 'BTC': 50000, 'ETH': 10000, 'SOL': 100, 'PAXG': 10, 'XRP': 50 };
-
         this.orderbook = { bids: [], asks: [] };
         this.fundingData = null;
         this.assetIndex = -1;
@@ -631,7 +626,6 @@ class WhaleFlowDashboard {
         this.fundingData = null;
 
         this.loadCoinData(newCoin);
-        this.reprocessTrades();
 
         document.querySelectorAll('.coin-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.coin === newCoin);
@@ -2161,52 +2155,19 @@ class WhaleFlowDashboard {
         }).join('');
     }
 
-    reprocessTrades(coin = null) {
-        const targetCoin = coin || this.currentCoin;
-        const d = this.getCoinData(targetCoin);
-        const threshold = (targetCoin === this.currentCoin) 
-            ? this.whaleThreshold 
-            : parseInt(localStorage.getItem(`whaleflow_threshold_${targetCoin}`) || '50000', 10);
-
-        // Reset all accumulators
+    reprocessTrades() {
+        const d = this.getCoinData(this.currentCoin);
         d.totalBuyVolume = 0; d.totalSellVolume = 0;
         d.buyCount = 0; d.sellCount = 0;
-        d.currentBuyVolume = 0; d.currentSellVolume = 0;
-        d.currentBuyCount = 0; d.currentSellCount = 0;
 
         d.whaleTrades.forEach(trade => {
-            // Only count trades that meet the threshold for THIS coin
-            if (trade.value < threshold) return;
-
-            // Historical totals
-            if (trade.side === 'BUY') {
-                d.totalBuyVolume += trade.value;
-                d.buyCount++;
-            } else {
-                d.totalSellVolume += trade.value;
-                d.sellCount++;
-            }
-
-            // Current mode totals
-            if (this.currentModeClearTime > 0 && trade.time >= this.currentModeClearTime) {
-                if (trade.side === 'BUY') {
-                    d.currentBuyVolume += trade.value;
-                    d.currentBuyCount++;
-                } else {
-                    d.currentSellVolume += trade.value;
-                    d.currentSellCount++;
-                }
-            }
+            if (trade.side === 'BUY') { d.totalBuyVolume += trade.value; d.buyCount++; }
+            else { d.totalSellVolume += trade.value; d.sellCount++; }
         });
 
-        // Only update classes and UI if we reprocessed the ACTIVE coin
-        if (targetCoin === this.currentCoin) {
-            this.loadCoinData(targetCoin);
-            this.updateSummaryCards();
-            this.updateAnalytics();
-            this.renderTradesList();
-        }
-        this._saveCurrentToStorage();
+        this.loadCoinData(this.currentCoin);
+        this.updateSummaryCards();
+        this.updateAnalytics();
     }
 
     // ==================== DATA VIEW MODE ====================
@@ -2261,18 +2222,12 @@ class WhaleFlowDashboard {
 
     getDisplayTrades() {
         const d = this.getCoinData(this.currentCoin);
-        const threshold = this.whaleThreshold;
-        
-        // Always filter by current threshold for consistency
-        const meetThreshold = d.whaleTrades.filter(t => t.value >= threshold);
-
         if (this.dataViewMode === 'Historical') {
-            return meetThreshold;
+            return d.whaleTrades;
         }
-        
-        // Current mode: only trades after clearTime (already filtered by threshold above)
+        // Current mode: only trades after clearTime
         if (this.currentModeClearTime <= 0) return [];
-        return meetThreshold.filter(t => t.time >= this.currentModeClearTime);
+        return d.whaleTrades.filter(t => t.time >= this.currentModeClearTime);
     }
 
     getDisplayVolumes() {
@@ -2422,45 +2377,12 @@ class WhaleFlowDashboard {
     // ==================== SERVER STATE HYDRATION ====================
 
     /**
-     * Resets all session-local data for a fresh start (e.g. after server reboot)
-     */
-    forceGlobalReset(startTime) {
-        console.warn(`🧹 Global Reset: Syncing all devices to new server session (${new Date(startTime).toLocaleString()})`);
-        
-        this.currentModeClearTime = startTime;
-        localStorage.setItem('whaleflow_clearTime', startTime.toString());
-
-        this.coinDataStore.forEach(d => {
-            d.currentBuyVolume = 0;
-            d.currentSellVolume = 0;
-            d.currentBuyCount = 0;
-            d.currentSellCount = 0;
-            d.lastTradeTime = startTime;
-        });
-
-        this._saveCurrentToStorage();
-        this.showToast("🔄 Server Rebooted: Syncing all devices to new session", 5000);
-        
-        this._applyInitialMode(); // Update clear button visibility and hints
-    }
-
-    /**
      * Load pre-accumulated state from the Python backend.
      * Called on first load when deployed on Streamlit.
      * This lets users see historical data instantly without waiting.
      */
     loadServerState(state) {
         if (!state || !state.coins) return;
-
-        const serverStartedAt = state.started_at ? (state.started_at * 1000) : 0; // Backend is in seconds
-
-        // REBOOT DETECTION: If the server started AFTER our last known session, it's a reboot.
-        // This forces all devices (phones, PCs, etc) to reset their 'Current' flows together.
-        const lastKnownStart = localStorage.getItem('whaleflow_lastServerStart');
-        if (lastKnownStart && serverStartedAt > parseInt(lastKnownStart, 10)) {
-            this.forceGlobalReset(serverStartedAt);
-        }
-        localStorage.setItem('whaleflow_lastServerStart', serverStartedAt.toString());
 
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
@@ -2476,33 +2398,19 @@ class WhaleFlowDashboard {
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
                 // Keep up to 500 trades to ensure Current mode can reconstruct its volume
                 d.whaleTrades = serverCoin.whale_trades.slice(0, 500);
-                
-                // Get the specific threshold for this coin to ensure Historical/Current consistency
-                const coinThreshold = parseInt(localStorage.getItem(`whaleflow_threshold_${coin}`) || '50000', 10);
-                const backendThresh = this.backendThresholds[coin] || 50000;
+                d.totalBuyVolume = serverCoin.total_buy_vol;
+                d.totalSellVolume = serverCoin.total_sell_vol;
+                d.buyCount = serverCoin.buy_count;
+                d.sellCount = serverCoin.sell_count;
 
-                // MULTI-DEVICE SYNC: If we are at the backend's default threshold, trust the server's full totals.
-                // This ensures all devices see the same multi-hour history.
-                if (coinThreshold === backendThresh) {
-                    d.totalBuyVolume = serverCoin.total_buy_vol;
-                    d.totalSellVolume = serverCoin.total_sell_vol;
-                    d.buyCount = serverCoin.buy_count;
-                    d.sellCount = serverCoin.sell_count;
-                } else {
-                    // If at a custom threshold, re-calculate from the shared buffer.
-                    // This ensures Device A and Device B at $200k also match each other perfectly.
-                    this.reprocessTrades(coin);
-                }
-
-                // Stitching logic for Current mode — seamlessly adds only NEW trades from the server buffer
+                // Re-hydrate the current accumulation seamlessly without double-counting
                 if (this.currentModeClearTime > 0) {
                     // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
                     const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
                     
                     for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
                         const t = d.whaleTrades[i];
-                        // BOTH time AND threshold must match for Current mode stitching
-                        if (t.time > stitchTime && t.value >= coinThreshold) {
+                        if (t.time > stitchTime) {
                             if (t.side === 'BUY') {
                                 d.currentBuyVolume += t.value;
                                 d.currentBuyCount++;
