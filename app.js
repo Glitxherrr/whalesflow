@@ -3122,7 +3122,7 @@ class WhaleFlowDashboard {
 
         // Exchange status dots
         const now = Date.now() / 1000;
-        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 'BFX', 'BGT'].forEach(ex => {
+        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'].forEach(ex => {
             const el = this.elements['exch' + ex];
             if (!el) return;
             
@@ -3139,6 +3139,9 @@ class WhaleFlowDashboard {
             
             if (!info) {
                 // Not implementation in either -> skip or mark down
+                el.className = 'exch-item disconnected';
+                const ageEl = el.querySelector('.exch-age');
+                if (ageEl) ageEl.textContent = 'N/A';
                 return;
             }
 

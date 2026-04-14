@@ -241,10 +241,10 @@ class HyperliquidCollector:
         # Exchange health tracking
         self.exchanges = [
             'HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 
-            'BFX', 'BGT'
+            'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'
         ]
         self.exchange_status = {
-            ex: {'connected': False, 'last_msg': 0, 'last_error': ''}
+            ex: {'connected': False, 'last_msg': 0.0, 'last_error': ''}
             for ex in self.exchanges
         }
 
@@ -259,7 +259,7 @@ class HyperliquidCollector:
         self._dedupe_queue = deque()
 
         self.local_clients = set()
-        self.local_loop = None
+        self.local_loop: Optional[asyncio.AbstractEventLoop] = None
 
         for coin in self.coins:
             self.data[coin] = self._new_coin_data()
@@ -282,7 +282,7 @@ class HyperliquidCollector:
             'mega_whales': deque(maxlen=500),
             'abs_cum_buy': 0.0,
             'abs_cum_sell': 0.0,
-            'abs_snapshots': deque(maxlen=CONFIG['abs_snapshots_maxlen']),
+            'abs_snapshots': deque(maxlen=int(cast(Any, CONFIG['abs_snapshots_maxlen']))),
             'abs_detected': False,
             'abs_side': None,
             'abs_conditions': {'flow': False, 'reversal': False, 'oi': False, 'funding': False},
@@ -290,15 +290,15 @@ class HyperliquidCollector:
             'abs_metrics': {'cvd': 0, 'vol': 0, 'price_delta': 0, 'oi_delta': 0, 'imbalance': 50, 'funding': 0},
             'last_trade_price': 0.0,
             'funding': 0.0,
-            'funding_history': deque(maxlen=CONFIG['funding_history_maxlen']),
-            'market_history': deque(maxlen=CONFIG['market_history_maxlen']),
+            'funding_history': deque(maxlen=int(cast(Any, CONFIG['funding_history_maxlen']))),
+            'market_history': deque(maxlen=int(cast(Any, CONFIG['market_history_maxlen']))),
             'mark_px': 0.0,
             'oracle_px': 0.0,
             'open_interest': 0.0,
             'day_volume': 0.0,
-            'pressure_history': deque(maxlen=CONFIG['pressure_history_maxlen']),
+            'pressure_history': deque(maxlen=int(cast(Any, CONFIG['pressure_history_maxlen']))),
             'last_pressure_snap': {'buys': 0.0, 'sells': 0.0},
-            'volume_buckets': deque(maxlen=CONFIG['volume_buckets_maxlen']),
+            'volume_buckets': deque(maxlen=int(cast(Any, CONFIG['volume_buckets_maxlen']))),
             'current_bucket_buy': 0.0,
             'current_bucket_sell': 0.0,
             'signals': {
@@ -347,7 +347,11 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_ws_bybit, daemon=True).start()
         threading.Thread(target=self._run_ws_okx, daemon=True).start()
         threading.Thread(target=self._run_ws_kraken, daemon=True).start()
-        threading.Thread(target=self._run_ws_bitget, daemon=True).start() # Enabled and updated
+        threading.Thread(target=self._run_ws_bitget, daemon=True).start()
+        threading.Thread(target=self._run_ws_deribit, daemon=True).start()
+        threading.Thread(target=self._run_ws_mexc, daemon=True).start()
+        threading.Thread(target=self._run_ws_gate, daemon=True).start()
+        threading.Thread(target=self._run_ws_upbit, daemon=True).start()
         threading.Thread(target=self._run_funding, daemon=True).start()
         threading.Thread(target=self._run_signals, daemon=True).start()
         threading.Thread(target=self._run_snapshots, daemon=True).start()
@@ -1493,6 +1497,171 @@ class HyperliquidCollector:
         else:
             d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
         return result
+
+
+    # ==================== WEBSOCKET - Deribit ====================
+
+    def _run_ws_deribit(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_deribit())
+            except Exception as e:
+                logger.error(f"WS Deribit error: {e}")
+                self.exchange_status['DRB']['connected'] = False
+                time.sleep(10)
+
+    async def _ws_loop_deribit(self):
+        url = "wss://www.deribit.com/ws/api/v2"
+        async with websockets.connect(url) as ws:
+            self.exchange_status['DRB']['connected'] = True
+            channels = []
+            for c in ['BTC', 'ETH', 'SOL']:
+                if c in self.coins:
+                    channels.append(f"trades.{c}-PERPETUAL.raw")
+            await ws.send(json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "public/subscribe",
+                "params": {"channels": channels}
+            }))
+            async for raw in ws:
+                msg = json.loads(raw)
+                if 'params' in msg and 'data' in msg['params']:
+                    self.exchange_status['DRB']['last_msg'] = time.time()
+                    for t in msg['params']['data']:
+                        coin = t['instrument_name'].split('-')[0]
+                        self._process_trades([{
+                            'coin': coin, 'px': float(t['price']), 'sz': float(t['amount']),
+                            'side': 'B' if t['direction'] == 'buy' else 'S',
+                            'time': int(t['timestamp']), 'exchange': 'DRB'
+                        }])
+
+    # ==================== WEBSOCKET - MEXC ====================
+
+    def _run_ws_mexc(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_mexc())
+            except Exception as e:
+                logger.error(f"WS MEXC error: {e}")
+                self.exchange_status['MEXC']['connected'] = False
+                time.sleep(10)
+
+    async def _ws_loop_mexc(self):
+        url = "wss://wbs.mexc.com/ws"
+        async with websockets.connect(url) as ws:
+            self.exchange_status['MEXC']['connected'] = True
+            params = [f"spot@public.deals.v3.api@{c}USDT" for c in self.coins]
+            await ws.send(json.dumps({"method": "SUBSCRIPTION", "params": params}))
+            async for raw in ws:
+                msg = json.loads(raw)
+                if 'd' in msg and 'deals' in msg['d']:
+                    self.exchange_status['MEXC']['last_msg'] = time.time()
+                    coin = msg['s'].replace('USDT', '')
+                    trades = []
+                    for t in msg['d']['deals']:
+                        trades.append({
+                            'coin': coin, 'px': float(t['p']), 'sz': float(t['q']),
+                            'side': 'B' if t['S'] == 1 else 'S', 'time': int(t['t']),
+                            'exchange': 'MEXC_SPOT'
+                        })
+                    self._process_trades(trades)
+
+    # ==================== WEBSOCKET - Gate.io ====================
+
+    def _run_ws_gate(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_gate())
+            except Exception as e:
+                logger.error(f"WS Gate error: {e}")
+                self.exchange_status['GATE']['connected'] = False
+                time.sleep(10)
+
+    async def _ws_loop_gate(self):
+        url = "wss://api.gateio.ws/ws/v4/"
+        async with websockets.connect(url) as ws:
+            self.exchange_status['GATE']['connected'] = True
+            symbols = [f"{c}_USDT" for c in self.coins]
+            await ws.send(json.dumps({
+                "time": int(time.time()), "channel": "spot.trades",
+                "event": "subscribe", "payload": symbols
+            }))
+            
+            # Start a separate task for futures
+            asyncio.create_task(self._gate_futures_listener())
+            async for raw in ws:
+                msg = json.loads(raw)
+                if msg.get('event') == 'update' and msg.get('channel') == 'spot.trades':
+                    self.exchange_status['GATE']['last_msg'] = time.time()
+                    data = msg.get('result')
+                    coin = data.get('currency_pair', '').split('_')[0]
+                    self._process_trades([{
+                        'coin': coin, 'px': float(data['price']), 'sz': float(data['amount']),
+                        'side': 'B' if data['side'] == 'buy' else 'S',
+                        'time': int(float(data['create_time']) * 1000), 'exchange': 'GATE_SPOT'
+                    }])
+
+    async def _gate_futures_listener(self):
+        url = "wss://fx-ws.gateio.ws/v4/ws/usdt"
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+                symbols = [f"{c}_USDT" for c in self.coins]
+                await ws.send(json.dumps({
+                    "time": int(time.time()), "channel": "futures.trades",
+                    "event": "subscribe", "payload": symbols
+                }))
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                        if msg.get('event') == 'update' and msg.get('channel') == 'futures.trades':
+                            for t in msg['result']:
+                                coin = t['contract'].split('_')[0]
+                                self._process_trades([{
+                                    'coin': coin, 'px': float(t['price']), 'sz': abs(float(t['size'])),
+                                    'side': 'B' if t['size'] > 0 else 'S',
+                                    'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE_FUT'
+                                }])
+                                self.exchange_status['GATE']['last_msg'] = time.time()
+                    except Exception: pass
+        except Exception: pass
+
+    def _run_ws_upbit(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        while self.running:
+            try:
+                loop.run_until_complete(self._ws_loop_upbit())
+            except Exception as e:
+                logger.error(f"WS Upbit error: {e}")
+                self.exchange_status['UPB']['connected'] = False
+                time.sleep(10)
+
+    async def _ws_loop_upbit(self):
+        url = "wss://api.upbit.com/websocket/v1"
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+                self.exchange_status['UPB']['connected'] = True
+                codes = [f"KRW-{c}" for c in self.coins]
+                # Upbit Format: [{"ticket":"test"},{"type":"trade","codes":["KRW-BTC"]}]
+                await ws.send(json.dumps([{"ticket": "whaleflow"}, {"type": "trade", "codes": codes}]))
+                async for raw in ws:
+                    try:
+                        data = json.loads(raw)
+                        if data.get('type') == 'trade':
+                            coin = data['code'].split('-')[1]
+                            side = 'B' if data['ask_bid'] == 'BID' else 'S'
+                            self._process_trades([{
+                                'coin': coin, 'px': float(data['trade_price']), 'sz': float(data['trade_volume']),
+                                'side': side, 'time': int(data['trade_timestamp']), 'exchange': 'UPB'
+                            }])
+                            self.exchange_status['UPB']['last_msg'] = time.time()
+                    except Exception: pass
+        except Exception: pass
 
     def _check_funding_extreme(self, coin):
         d = self.data[coin]
