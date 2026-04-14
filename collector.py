@@ -257,6 +257,9 @@ class HyperliquidCollector:
         self._dedupe_lock = threading.Lock()
         self._dedupe_set = set()
         self._dedupe_queue = deque()
+        
+        # Currency Conversion
+        self.krw_usd_rate = 1380.0
 
         self.local_clients = set()
         self.local_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1109,8 +1112,11 @@ class HyperliquidCollector:
             r = requests.post('https://api.hyperliquid.xyz/info',
                               json={'type': 'metaAndAssetCtxs'}, timeout=10)
             data = r.json()
+            # Periodically refresh KRW rate
+            krw_r = requests.get('https://api.exchangerate-api.com/v4/latest/USD', timeout=5)
+            self.krw_usd_rate = krw_r.json().get('rates', {}).get('KRW', 1380.0)
         except Exception as e:
-            logger.warning(f"Funding API request failed: {e}")
+            logger.warning(f"Metadata/KRW API request failed: {e}")
             return
             
         if not data or not isinstance(data, list) or len(data) < 2:
@@ -1694,8 +1700,10 @@ class HyperliquidCollector:
                         if data.get('type') == 'trade':
                             coin = data['code'].split('-')[1]
                             side = 'B' if data['ask_bid'] == 'BID' else 'S'
+                            # Convert KRW price to USD
+                            px_usd = float(data['trade_price']) / self.krw_usd_rate
                             self._process_trades([{
-                                'coin': coin, 'px': float(data['trade_price']), 'sz': float(data['trade_volume']),
+                                'coin': coin, 'px': px_usd, 'sz': float(data['trade_volume']),
                                 'side': side, 'time': int(data['trade_timestamp']), 'exchange': 'UPB'
                             }])
                             self.exchange_status['UPB']['last_msg'] = time.time()
