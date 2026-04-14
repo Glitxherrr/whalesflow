@@ -98,6 +98,7 @@ class CoinData(TypedDict):
     alert_level: int
     alert_label: str
     regime: RegimeData
+    current_since: float
 
 # ===== IN-MEMORY LOG HANDLER =====
 class MemoryLogHandler(logging.Handler):
@@ -307,6 +308,7 @@ class HyperliquidCollector:
             'volume_buckets': deque(maxlen=int(cast(Any, CONFIG['volume_buckets_maxlen']))),
             'current_bucket_buy': 0.0,
             'current_bucket_sell': 0.0,
+            'current_since': time.time() * 1000,
             'signals': {
                 'absorption':      {'active': False, 'side': None, 'detail': '', 'time': 0.0},
                 'cvd_divergence':  {'active': False, 'side': None, 'detail': '', 'time': 0.0},
@@ -438,7 +440,8 @@ class HyperliquidCollector:
 
                     for key in ['total_buy_vol', 'total_sell_vol', 'buy_count', 'sell_count',
                                 'current_buy_vol', 'current_sell_vol', 'current_buy_count', 'current_sell_count',
-                                'funding', 'mark_px', 'oracle_px', 'open_interest', 'day_volume', 'last_trade_price']:
+                                'funding', 'mark_px', 'oracle_px', 'open_interest', 'day_volume', 'last_trade_price',
+                                'current_since']:
                         if key in sc:
                             d[key] = sc[key]
 
@@ -1824,6 +1827,7 @@ class HyperliquidCollector:
                     'current_sell_vol': d['current_sell_vol'],
                     'current_buy_count': d['current_buy_count'],
                     'current_sell_count': d['current_sell_count'],
+                    'current_since': d.get('current_since', 0),
                     'funding': d['funding'],
                     'funding_history': list(d['funding_history']),
                     'market_history': list(d['market_history']),
@@ -1918,7 +1922,9 @@ class HyperliquidCollector:
                                     self.data[c]['current_sell_vol'] = 0.0
                                     self.data[c]['current_buy_count'] = 0
                                     self.data[c]['current_sell_count'] = 0
+                                    self.data[c]['current_since'] = time.time() * 1000
                                 logger.info("Current accumulation cleared by user")
+                                self._save_snapshot() # Immediate persistence
                         elif data.get('method') == 'set_threshold':
                             coin = data.get('coin')
                             val = data.get('value')

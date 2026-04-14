@@ -2528,6 +2528,22 @@ class WhaleFlowDashboard {
                 d.currentSellVolume = serverCoin.current_sell_vol || 0;
                 d.currentBuyCount = serverCoin.current_buy_count || 0;
                 d.currentSellCount = serverCoin.current_sell_count || 0;
+                
+                // Sync the clear time from the server to ensure consistency across refreshes
+                if (serverCoin.current_since > 0) {
+                    if (coin === this.currentCoin) {
+                        const oldTime = this.currentModeClearTime;
+                        this.currentModeClearTime = serverCoin.current_since;
+                        
+                        // Update UI hint if it changed significantly
+                        if (Math.abs(oldTime - this.currentModeClearTime) > 5000) {
+                            const hint = document.getElementById('tfBarHint');
+                            if (hint && this.dataViewMode === 'Current') {
+                                hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
+                            }
+                        }
+                    }
+                }
 
                 if (d.whaleTrades.length > 0) {
                     d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
