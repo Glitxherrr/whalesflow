@@ -264,6 +264,9 @@ class HyperliquidCollector:
         for coin in self.coins:
             self.data[coin] = self._new_coin_data()
 
+        # Log throttling
+        self._last_warn_time = {}
+
         # Load previous snapshot
         self._load_snapshot()
 
@@ -648,18 +651,28 @@ class HyperliquidCollector:
             except Exception as e:
                 err_str = str(e).lower()
                 self.exchange_status['BGT']['connected'] = False
-                if "close frame" in err_str or "rejected" in err_str or "403" in err_str:
-                    logger.info("Bitget Spot: Regional Block detected (Streamlit Cloud US).")
+                
+                # Downgrade to warning and throttle
+                is_geo = any(x in err_str for x in ["close frame", "rejected", "403", "extra_headers", "451"])
+                now = time.time()
+                last_log = self._last_warn_time.get('BGT', 0)
+                
+                if is_geo:
                     self.exchange_status['BGT']['last_error'] = "Geo-Blocked"
-                    break 
-                logger.error(f"WS Bitget error: {e}")
-                time.sleep(10)
+                    if now - last_log > 3600: # Log once per hour
+                        logger.warning(f"Bitget connectivity: likely geo-blocked or rejected. ({e})")
+                        self._last_warn_time['BGT'] = now
+                else:
+                    if now - last_log > 60: # Throttle rapid errors
+                        logger.warning(f"WS Bitget connection issue: {e}")
+                        self._last_warn_time['BGT'] = now
+                time.sleep(30)
 
     async def _ws_loop_bitget(self):
         # Using alternate domain to try and bypass regional blocks
         url = "wss://ws.bitgetapi.com/v2/ws/public"
-        headers = {"Origin": "https://www.bitget.com"}
-        async with websockets.connect(url, extra_headers=headers, ping_interval=20, ping_timeout=10) as ws:
+        # Removed extra_headers as some environments' websockets lib pass it incorrectly to lower levels
+        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BGT']['connected'] = True
             # Subscribe Spot and Futures
             args = []
@@ -695,9 +708,21 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_binance())
             except Exception as e:
-                logger.error(f"WS Binance error: {e}")
                 self.exchange_status['BIN']['connected'] = False
-                time.sleep(10)
+                err_str = str(e).lower()
+                now = time.time()
+                last_log = self._last_warn_time.get('BIN', 0)
+                
+                if any(x in err_str for x in ["451", "rejected", "forbidden", "403"]):
+                    self.exchange_status['BIN']['last_error'] = "Geo-Blocked"
+                    if now - last_log > 3600:
+                        logger.warning(f"Binance connectivity: likely geo-blocked or rejected. ({e})")
+                        self._last_warn_time['BIN'] = now
+                else:
+                    if now - last_log > 60:
+                        logger.warning(f"WS Binance connection issue: {e}")
+                        self._last_warn_time['BIN'] = now
+                time.sleep(30)
 
     async def _ws_loop_binance(self):
         async def spot_loop():
