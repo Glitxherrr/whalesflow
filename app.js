@@ -3162,7 +3162,9 @@ class WhaleFlowDashboard {
                 }
             } else {
                 el.classList.add('disconnected');
-                if (ageEl) ageEl.textContent = 'down';
+                if (ageEl) {
+                    ageEl.textContent = info.last_error === 'Geo-Blocked' ? 'blocked' : 'down';
+                }
             }
         });
     }

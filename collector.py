@@ -188,15 +188,15 @@ app = FastAPI()
 # Serve static files from root for cloud deployment compatibility
 @app.get("/")
 async def get_index():
-    return FileResponse("index.html")
+    return FileResponse("index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/styles.css")
 async def get_styles():
-    return FileResponse("styles.css")
+    return FileResponse("styles.css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/app.js")
 async def get_app():
-    return FileResponse("app.js")
+    return FileResponse("app.js", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # Mount static for everything else
 app.mount("/static", StaticFiles(directory="."), name="static")
@@ -542,10 +542,15 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_coinbase())
             except Exception as e:
-                logger.error(f"WS Coinbase connection error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['CB']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Coinbase connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Coinbase connection error: {e}")
+                    self.exchange_status['CB']['last_error'] = str(e)
                 self.exchange_status['CB']['connected'] = False
-                self.exchange_status['CB']['last_error'] = str(e)
-                time.sleep(5)
+                time.sleep(30)
 
     async def _ws_loop_coinbase(self):
         url = "wss://advanced-trade-ws.coinbase.com"
@@ -590,8 +595,12 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_bitfinex())
             except Exception as e:
-                if "451" in str(e):
+                err_str = str(e).lower()
+                is_geo = any(x in err_str for x in ["451", "forbidden", "rejected", "403"])
+                if is_geo:
                     logger.warning("Bitfinex geo-blocked.")
+                    self.exchange_status['BFX']['last_error'] = "Geo-Blocked"
+                    self.exchange_status['BFX']['connected'] = False
                     break
                 logger.error(f"WS Bitfinex error: {e}")
                 self.exchange_status['BFX']['connected'] = False
@@ -777,9 +786,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_bybit())
             except Exception as e:
-                logger.error(f"WS Bybit error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['BYB']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Bybit connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Bybit error: {e}")
                 self.exchange_status['BYB']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_bybit(self):
         async def linear_loop():
@@ -828,9 +842,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_okx())
             except Exception as e:
-                logger.error(f"WS OKX error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['OKX']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"OKX connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS OKX error: {e}")
                 self.exchange_status['OKX']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_okx(self):
         url = "wss://ws.okx.com:8443/ws/v5/public"
@@ -862,9 +881,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_kraken())
             except Exception as e:
-                logger.error(f"WS Kraken error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['KRK']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Kraken connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Kraken error: {e}")
                 self.exchange_status['KRK']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_kraken(self):
         async def spot_loop():
@@ -1548,9 +1572,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_deribit())
             except Exception as e:
-                logger.error(f"WS Deribit error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['DRB']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Deribit connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Deribit error: {e}")
                 self.exchange_status['DRB']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_deribit(self):
         url = "wss://www.deribit.com/ws/api/v2"
@@ -1586,9 +1615,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_mexc())
             except Exception as e:
-                logger.error(f"WS MEXC error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['MEXC']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"MEXC connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS MEXC error: {e}")
                 self.exchange_status['MEXC']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_mexc(self):
         url = "wss://wbs.mexc.com/ws"
@@ -1620,9 +1654,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_gate())
             except Exception as e:
-                logger.error(f"WS Gate error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['GATE']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Gate.io connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Gate error: {e}")
                 self.exchange_status['GATE']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_gate(self):
         url = "wss://api.gateio.ws/ws/v4/"
@@ -1681,9 +1720,14 @@ class HyperliquidCollector:
             try:
                 loop.run_until_complete(self._ws_loop_upbit())
             except Exception as e:
-                logger.error(f"WS Upbit error: {e}")
+                err_str = str(e).lower()
+                if any(x in err_str for x in ["451", "forbidden", "rejected", "403", "close frame"]):
+                    self.exchange_status['UPB']['last_error'] = "Geo-Blocked"
+                    logger.warning(f"Upbit connectivity: likely geo-blocked. ({e})")
+                else:
+                    logger.error(f"WS Upbit error: {e}")
                 self.exchange_status['UPB']['connected'] = False
-                time.sleep(10)
+                time.sleep(30)
 
     async def _ws_loop_upbit(self):
         url = "wss://api.upbit.com/websocket/v1"
