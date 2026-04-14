@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhaleFlow Ã¢â‚¬â€ Hyperliquid Whale Tracker</title>
+    <title>WhaleFlow — Hyperliquid Whale Tracker</title>
     <meta name="description" content="Real-time Hyperliquid whale orderbook tracking dashboard with live funding rates, absorption detection, and whale trade monitoring.">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>Ã°Å¸Ââ€¹</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐋</text></svg>">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -21,7 +21,7 @@
     <header class="header" id="header">
         <div class="header-left">
             <div class="logo">
-                <span class="logo-icon">Ã°Å¸Ââ€¹</span>
+                <span class="logo-icon">🐋</span>
                 <h1>Whale<span class="accent">Flow</span></h1>
             </div>
             <div class="connection-status" id="connectionStatus">
@@ -36,19 +36,19 @@
         </div>
         <div class="header-right">
             <div class="whale-threshold">
-                <label for="whaleThreshold">Ã°Å¸Ââ€¹ Min Size</label>
+                <label for="whaleThreshold">🐋 Min Size</label>
                 <div class="threshold-input">
                     <span class="dollar-sign">$</span>
                     <input type="number" id="whaleThreshold" value="50000" min="50" step="5000">
                 </div>
             </div>
             <div class="notification-toggle" id="notifToggle" title="Toggle desktop notifications">
-                <span class="notif-icon" id="notifIcon">Ã°Å¸â€â€</span>
+                <span class="notif-icon" id="notifIcon">🔔</span>
                 <span class="notif-label" id="notifLabel">Alerts Off</span>
             </div>
             <div class="live-clock" id="liveClock"></div>
             <button id="forceRefreshBtn" class="force-refresh-btn" title="Force Hard Reload (Ctrl+Shift+R)">
-                <span class="refresh-icon">Ã°Å¸â€â€ž</span>
+                <span class="refresh-icon">🔄</span>
             </button>
         </div>
     </header>
@@ -56,31 +56,31 @@
     <!-- Market Regime Detector -->
     <div class="regime-bar" id="regimeBar">
         <div class="regime-indicator" id="regimeIndicator">
-            <span class="regime-dot" id="regimeDot">Ã¢â€”Â</span>
-            <span class="regime-label" id="regimeLabel">ANALYZINGÃ¢â‚¬Â¦</span>
+            <span class="regime-dot" id="regimeDot">●</span>
+            <span class="regime-label" id="regimeLabel">ANALYZING…</span>
         </div>
         <div class="regime-score-wrap">
             <div class="regime-score-bar">
                 <div class="regime-score-fill" id="regimeScoreFill" style="width: 50%"></div>
             </div>
-            <span class="regime-score-value" id="regimeScoreValue">Ã¢â‚¬â€</span>
+            <span class="regime-score-value" id="regimeScoreValue">—</span>
         </div>
         <div class="regime-conditions" id="regimeConditions">
-            <span class="regime-cond" id="regCondRange">Ã°Å¸â€œÂ Range: Ã¢â‚¬â€</span>
-            <span class="regime-cond" id="regCondVolume">Ã°Å¸â€œÅ  Vol: Ã¢â‚¬â€</span>
-            <span class="regime-cond" id="regCondCVD">Ã¢Å¡â€“Ã¯Â¸Â CVD: Ã¢â‚¬â€</span>
-            <span class="regime-cond" id="regCondBalance">Ã°Å¸Å½Â¯ Balance: Ã¢â‚¬â€</span>
+            <span class="regime-cond" id="regCondRange">📏 Range: —</span>
+            <span class="regime-cond" id="regCondVolume">📊 Vol: —</span>
+            <span class="regime-cond" id="regCondCVD">⚖️ CVD: —</span>
+            <span class="regime-cond" id="regCondBalance">🎯 Balance: —</span>
         </div>
     </div>
 
     <!-- Data View Mode Selector -->
     <div class="timeframe-bar" id="timeframeBar">
-        <div class="tf-bar-label">Ã°Å¸â€œÅ  Data View Mode</div>
+        <div class="tf-bar-label">📊 Data View Mode</div>
         <div class="tf-bar-buttons" id="tfWhaleVolume">
             <button class="tf-bar-btn active" data-tf="Historical">HISTORICAL</button>
             <button class="tf-bar-btn" data-tf="Current">CURRENT</button>
         </div>
-        <button class="clear-btn tf-clear-btn" id="clearDataBtn" style="display:none;" title="Clear data and start tracking from now">Ã¢Å“â€¢ Clear Data</button>
+        <button class="clear-btn tf-clear-btn" id="clearDataBtn" style="display:none;" title="Clear data and start tracking from now">✕ Clear Data</button>
         <div class="tf-bar-hint" id="tfBarHint">Showing all historical data from backend</div>
     </div>
 
@@ -91,7 +91,7 @@
             <div class="card-glow buy-glow"></div>
             <div class="card-inner">
                 <div class="card-header">
-                    <span class="card-icon">Ã°Å¸â€œË†</span>
+                    <span class="card-icon">📈</span>
                     <span class="card-label">WHALE BUYS</span>
                 </div>
                 <div class="card-value" id="totalWhaleBuys">$0</div>
@@ -109,8 +109,8 @@
                 <span class="vs-text">VS</span>
             </div>
             <div class="winning-badge" id="winningBadge">
-                <span class="winning-arrow" id="winningArrow">Ã¢Â¬â€ </span>
-                <span class="winning-label" id="winningLabel">Ã¢â‚¬â€</span>
+                <span class="winning-arrow" id="winningArrow">⬆</span>
+                <span class="winning-label" id="winningLabel">—</span>
             </div>
             <div class="dominance-meter">
                 <span class="dominance-value" id="dominancePct">50%</span>
@@ -123,7 +123,7 @@
             <div class="card-glow sell-glow"></div>
             <div class="card-inner">
                 <div class="card-header">
-                    <span class="card-icon">Ã°Å¸â€œâ€°</span>
+                    <span class="card-icon">📉</span>
                     <span class="card-label">WHALE SELLS</span>
                 </div>
                 <div class="card-value" id="totalWhaleSells">$0</div>
@@ -207,7 +207,7 @@
         <div class="panel orderbook-panel">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span class="panel-icon">Ã°Å¸â€œÅ </span>
+                    <span class="panel-icon">📊</span>
                     <h2>Whale Orderbook</h2>
                 </div>
                 <div class="panel-badges">
@@ -225,9 +225,9 @@
                     <div class="ob-empty">Loading orderbook...</div>
                 </div>
                 <div class="ob-spread" id="obSpread">
-                    <span class="spread-icon">Ã¢â€ â€¢</span>
+                    <span class="spread-icon">↕</span>
                     <span class="spread-label">Spread:</span>
-                    <span class="spread-value mono" id="spreadValue">Ã¢â‚¬â€</span>
+                    <span class="spread-value mono" id="spreadValue">—</span>
                     <span class="spread-pct mono" id="spreadPct"></span>
                 </div>
                 <div class="ob-side ob-bids" id="obBids">
@@ -240,7 +240,7 @@
         <div class="panel trades-panel">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span class="panel-icon">Ã°Å¸Ââ€¹</span>
+                    <span class="panel-icon">🐋</span>
                     <h2>Live Whale Trades</h2>
                 </div>
                 <div class="panel-badges">
@@ -258,7 +258,7 @@
                 </div>
                 <div class="trades-list" id="tradesList">
                     <div class="empty-state">
-                        <div class="empty-icon">Ã°Å¸Ââ€¹</div>
+                        <div class="empty-icon">🐋</div>
                         <p>Waiting for whale activity...</p>
                         <span class="empty-sub">Trades above threshold will appear here</span>
                     </div>
@@ -270,7 +270,7 @@
         <div class="panel analytics-panel">
             <div class="panel-header">
                 <div class="panel-title">
-                    <span class="panel-icon">Ã¢Å¡â€“Ã¯Â¸Â</span>
+                    <span class="panel-icon">⚖️</span>
                     <h2>Whale Analytics</h2>
                 </div>
                 <div class="panel-badges">
@@ -280,7 +280,7 @@
             <div class="analytics-container">
                 <!-- OB Whale Walls -->
                 <div class="analytics-section">
-                    <h3>Ã°Å¸â€œÅ  Orderbook Whale Walls</h3>
+                    <h3>📊 Orderbook Whale Walls</h3>
                     <div class="imbalance-bar-wrapper">
                         <div class="imbalance-label buy-text" id="obBuyWalls">$0</div>
                         <div class="imbalance-bar">
@@ -293,7 +293,7 @@
 
                 <!-- Trade Volume -->
                 <div class="analytics-section">
-                    <h3>Ã°Å¸â€œË† Trade Volume Imbalance</h3>
+                    <h3>📈 Trade Volume Imbalance</h3>
                     <div class="imbalance-bar-wrapper">
                         <div class="imbalance-label buy-text" id="tradeBuyVol">$0</div>
                         <div class="imbalance-bar">
@@ -306,7 +306,7 @@
 
                 <!-- Cumulative Whale Delta -->
                 <div class="analytics-section">
-                    <h3>Ã°Å¸â€œÂ Cumulative Whale Delta</h3>
+                    <h3>📐 Cumulative Whale Delta</h3>
                     <div class="cvd-display">
                         <div class="cvd-value" id="cvdValue">$0</div>
                         <div class="cvd-bar-wrapper">
@@ -320,7 +320,7 @@
 
                 <!-- Pressure History -->
                 <div class="analytics-section">
-                    <h3>Ã°Å¸â€œË† Whale Pressure (30s intervals)</h3>
+                    <h3>📈 Whale Pressure (30s intervals)</h3>
                     <div class="pressure-chart" id="pressureChart">
                         <div class="pressure-empty">Collecting data...</div>
                     </div>
@@ -328,70 +328,70 @@
 
                 <!-- Hourly Absorption Detection -->
                 <div class="analytics-section absorption-detail" id="absorptionDetail">
-                    <h3>Ã°Å¸â€Â¬ Absorption Detection</h3>
+                    <h3>🔬 Absorption Detection</h3>
 
                     <!-- Main Status Banner -->
                     <div class="abs-status-banner" id="absStatusBanner">
-                        <div class="abs-status-icon" id="absStatusIcon">Ã¢ÂÂ³</div>
+                        <div class="abs-status-icon" id="absStatusIcon">⏳</div>
                         <div class="abs-status-info">
-                            <div class="abs-status-label" id="absStatusLabel">MonitoringÃ¢â‚¬Â¦</div>
-                            <div class="abs-status-sub" id="absStatusSub">Accumulating hourly data Ã¢â‚¬â€ absorption fires only on reversal conditions</div>
+                            <div class="abs-status-label" id="absStatusLabel">Monitoring…</div>
+                            <div class="abs-status-sub" id="absStatusSub">Accumulating hourly data — absorption fires only on reversal conditions</div>
                         </div>
                     </div>
 
                     <!-- Evidence Panel (only visible when absorption detected) -->
                     <div class="abs-evidence-panel" id="absEvidencePanel" style="display:none;">
-                        <h4>Ã°Å¸â€œâ€¹ Evidence</h4>
+                        <h4>📋 Evidence</h4>
                         <div class="abs-evidence-grid">
                             <div class="abs-ev-item">
                                 <span class="ev-label">Dominant Flow</span>
-                                <span class="ev-value mono" id="evFlow">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evFlow">—</span>
                             </div>
                             <div class="abs-ev-item">
                                 <span class="ev-label">Price Direction</span>
-                                <span class="ev-value mono" id="evPrice">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evPrice">—</span>
                             </div>
                             <div class="abs-ev-item">
                                 <span class="ev-label">OI Trend</span>
-                                <span class="ev-value mono" id="evOI">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evOI">—</span>
                             </div>
                             <div class="abs-ev-item">
                                 <span class="ev-label">Funding Bias</span>
-                                <span class="ev-value mono" id="evFunding">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evFunding">—</span>
                             </div>
                             <div class="abs-ev-item full-width">
                                 <span class="ev-label">1h CVD</span>
-                                <span class="ev-value mono" id="evCVD">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evCVD">—</span>
                             </div>
                             <div class="abs-ev-item full-width">
                                 <span class="ev-label">1h Volume</span>
-                                <span class="ev-value mono" id="evVolume">Ã¢â‚¬â€</span>
+                                <span class="ev-value mono" id="evVolume">—</span>
                             </div>
                         </div>
                     </div>
 
                     <!-- Factor Gauges (compact, always visible) -->
                     <div class="abs-factors-compact">
-                        <h4>Ã°Å¸â€œÅ  1h Conditions</h4>
+                        <h4>📊 1h Conditions</h4>
                         <div class="abs-cond-row" id="condFlow">
-                            <span class="cond-dot" id="condFlowDot">Ã¢â€”â€¹</span>
+                            <span class="cond-dot" id="condFlowDot">○</span>
                             <span class="cond-name">Flow Imbalance &gt; 60%</span>
-                            <span class="cond-val mono" id="condFlowVal">Ã¢â‚¬â€</span>
+                            <span class="cond-val mono" id="condFlowVal">—</span>
                         </div>
                         <div class="abs-cond-row" id="condReversal">
-                            <span class="cond-dot" id="condReversalDot">Ã¢â€”â€¹</span>
+                            <span class="cond-dot" id="condReversalDot">○</span>
                             <span class="cond-name">Price Against Flow</span>
-                            <span class="cond-val mono" id="condReversalVal">Ã¢â‚¬â€</span>
+                            <span class="cond-val mono" id="condReversalVal">—</span>
                         </div>
                         <div class="abs-cond-row" id="condOI">
-                            <span class="cond-dot" id="condOIDot">Ã¢â€”â€¹</span>
+                            <span class="cond-dot" id="condOIDot">○</span>
                             <span class="cond-name">OI Increasing</span>
-                            <span class="cond-val mono" id="condOIVal">Ã¢â‚¬â€</span>
+                            <span class="cond-val mono" id="condOIVal">—</span>
                         </div>
                         <div class="abs-cond-row" id="condFunding">
-                            <span class="cond-dot" id="condFundingDot">Ã¢â€”â€¹</span>
+                            <span class="cond-dot" id="condFundingDot">○</span>
                             <span class="cond-name">Funding Confirms Bias</span>
-                            <span class="cond-val mono" id="condFundingVal">Ã¢â‚¬â€</span>
+                            <span class="cond-val mono" id="condFundingVal">—</span>
                         </div>
                         <div class="abs-cond-progress">
                             <span class="cond-progress-label" id="condProgressLabel">0 / 4 conditions met</span>
@@ -403,13 +403,13 @@
 
                     <!-- Hourly Accumulator Stats -->
                     <div class="abs-live-metrics">
-                        <h4>Ã¢ÂÂ± 1h Accumulator</h4>
+                        <h4>⏱ 1h Accumulator</h4>
                         <div class="abs-metric-grid">
                             <div class="abs-metric"><span>CVD</span><span class="mono" id="metricCVD">$0</span></div>
                             <div class="abs-metric"><span>Volume</span><span class="mono" id="metricVol">$0</span></div>
-                            <div class="abs-metric"><span>Price ÃŽâ€</span><span class="mono" id="metricPriceDelta">0.00%</span></div>
-                            <div class="abs-metric"><span>OI ÃŽâ€</span><span class="mono" id="metricOIDelta">0.00%</span></div>
-                            <div class="abs-metric"><span>Imbalance</span><span class="mono" id="metricImbalance">Ã¢â‚¬â€</span></div>
+                            <div class="abs-metric"><span>Price Δ</span><span class="mono" id="metricPriceDelta">0.00%</span></div>
+                            <div class="abs-metric"><span>OI Δ</span><span class="mono" id="metricOIDelta">0.00%</span></div>
+                            <div class="abs-metric"><span>Imbalance</span><span class="mono" id="metricImbalance">—</span></div>
                             <div class="abs-metric"><span>Funding</span><span class="mono" id="metricFunding">0.0000%</span></div>
                         </div>
                     </div>
@@ -429,17 +429,17 @@
             <!-- Reversal Radar -->
             <div class="card reversal-card">
                 <div class="card-header">
-                    <h2>Ã°Å¸Å½Â¯ Reversal Radar</h2>
-                    <span class="card-badge mono" id="radarAlertBadge">Ã°Å¸Å¸Â¢ Quiet (0/8)</span>
+                    <h2>🎯 Reversal Radar</h2>
+                    <span class="card-badge mono" id="radarAlertBadge">🟢 Quiet (0/8)</span>
                 </div>
 
                 <!-- Alert Level Banner -->
                 <div class="radar-alert-banner" id="radarAlertBanner">
                     <div class="radar-alert-level" id="radarAlertLevel">
-                        <span class="alert-level-icon" id="alertLevelIcon">Ã°Å¸Å¸Â¢</span>
+                        <span class="alert-level-icon" id="alertLevelIcon">🟢</span>
                         <span class="alert-level-text" id="alertLevelText">QUIET</span>
                     </div>
-                    <div class="radar-alert-sub" id="radarAlertSub">0 / 5 signals active Ã¢â‚¬â€ no reversal conditions detected</div>
+                    <div class="radar-alert-sub" id="radarAlertSub">0 / 5 signals active — no reversal conditions detected</div>
                     <div class="radar-alert-bar">
                         <div class="radar-alert-fill" id="radarAlertFill" style="width:0%"></div>
                     </div>
@@ -448,50 +448,50 @@
                 <!-- 7-Signal Checklist -->
                 <div class="signal-checklist">
                     <div class="signal-row" id="sigAbsorption">
-                        <span class="signal-dot" id="sigAbsorptionDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸Â§Â±</span>
+                        <span class="signal-dot" id="sigAbsorptionDot">○</span>
+                        <span class="signal-icon">🧱</span>
                         <span class="signal-name">Absorption</span>
-                        <span class="signal-detail mono" id="sigAbsorptionDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigAbsorptionDetail">—</span>
                     </div>
                     <div class="signal-row" id="sigCVD">
-                        <span class="signal-dot" id="sigCVDDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸â€œâ€°</span>
+                        <span class="signal-dot" id="sigCVDDot">○</span>
+                        <span class="signal-icon">📉</span>
                         <span class="signal-name">CVD Divergence</span>
-                        <span class="signal-detail mono" id="sigCVDDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigCVDDetail">—</span>
                     </div>
                     <div class="signal-row" id="sigOI">
-                        <span class="signal-dot" id="sigOIDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸â€œÅ </span>
+                        <span class="signal-dot" id="sigOIDot">○</span>
+                        <span class="signal-icon">📊</span>
                         <span class="signal-name">OI Divergence</span>
-                        <span class="signal-detail mono" id="sigOIDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigOIDetail">—</span>
                     </div>
                     <div class="signal-row" id="sigClimax">
-                        <span class="signal-dot" id="sigClimaxDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸Å’â€¹</span>
+                        <span class="signal-dot" id="sigClimaxDot">○</span>
+                        <span class="signal-icon">🌋</span>
                         <span class="signal-name">Volume Climax</span>
-                        <span class="signal-detail mono" id="sigClimaxDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigClimaxDetail">—</span>
                     </div>
                     <div class="signal-row" id="sigFunding">
-                        <span class="signal-dot" id="sigFundingDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸â€™Â°</span>
+                        <span class="signal-dot" id="sigFundingDot">○</span>
+                        <span class="signal-icon">💰</span>
                         <span class="signal-name">Funding Extreme</span>
-                        <span class="signal-detail mono" id="sigFundingDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigFundingDetail">—</span>
                     </div>
                     
                     <div class="signal-divider"></div>
                     <div class="signal-divider-title">Whale Flow Indicators</div>
 
                     <div class="signal-row" id="sigInitiative">
-                        <span class="signal-dot" id="sigInitiativeDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸Ââ€¹</span>
+                        <span class="signal-dot" id="sigInitiativeDot">○</span>
+                        <span class="signal-icon">🐋</span>
                         <span class="signal-name">Aggressive Initiative</span>
-                        <span class="signal-detail mono" id="sigInitiativeDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigInitiativeDetail">—</span>
                     </div>
                     <div class="signal-row" id="sigClustering">
-                        <span class="signal-dot" id="sigClusteringDot">Ã¢â€”â€¹</span>
-                        <span class="signal-icon">Ã°Å¸Â¦Ë†</span>
+                        <span class="signal-dot" id="sigClusteringDot">○</span>
+                        <span class="signal-icon">🦈</span>
                         <span class="signal-name">Whale Clustering</span>
-                        <span class="signal-detail mono" id="sigClusteringDetail">Ã¢â‚¬â€</span>
+                        <span class="signal-detail mono" id="sigClusteringDetail">—</span>
                     </div>
                 </div>
             </div>
@@ -499,7 +499,7 @@
             <!-- Mega Whales -->
             <div class="card mega-whales-card">
                 <div class="card-header">
-                    <h2>Ã°Å¸â€™Å½ Mega Whales</h2>
+                    <h2>💎 Mega Whales</h2>
                     <span class="card-badge mono" id="megaWhaleCount">0 events</span>
                 </div>
                 <div class="mega-whale-legend">
@@ -508,7 +508,7 @@
                 </div>
                 <div class="mega-whale-list" id="megaWhaleList">
                     <div class="empty-state">
-                        <div class="empty-icon">Ã°Å¸â€™Å½</div>
+                        <div class="empty-icon">💎</div>
                         <p>Waiting for mega whale activity...</p>
                         <span class="empty-sub">Initiative trades and whale clusters will appear here</span>
                     </div>
@@ -520,9 +520,9 @@
     <!-- System Status Panel -->
     <section class="system-panel" id="systemPanel">
         <div class="system-panel-header" id="systemPanelToggle">
-            <span class="system-panel-icon">Ã°Å¸â€“Â¥Ã¯Â¸Â</span>
+            <span class="system-panel-icon">🖥️</span>
             <span class="system-panel-title">System Status</span>
-            <span class="system-panel-arrow" id="systemPanelArrow">Ã¢â€“Â¼</span>
+            <span class="system-panel-arrow" id="systemPanelArrow">▼</span>
         </div>
         <div class="system-panel-body" id="systemPanelBody" style="display:none;">
             <div class="system-grid">
@@ -567,21 +567,21 @@
     <!-- Log Sidebar -->
     <div class="log-sidebar" id="logSidebar">
         <div class="log-sidebar-tab" id="logSidebarTab" title="System Logs">
-            <span class="log-tab-icon">Ã°Å¸â€œâ€¹</span>
+            <span class="log-tab-icon">📋</span>
             <span class="log-tab-badge" id="logBadge">0</span>
         </div>
         <div class="log-sidebar-content" id="logSidebarContent">
             <div class="log-sidebar-header">
-                <h3>Ã°Å¸â€œâ€¹ System Logs</h3>
+                <h3>📋 System Logs</h3>
                 <div class="log-header-actions">
-                    <button class="log-clear-btn" id="logClearBtn" title="Clear logs">Ã°Å¸â€”â€˜Ã¯Â¸Â</button>
-                    <button class="log-close-btn" id="logCloseBtn" title="Close">Ã¢Å“â€¢</button>
+                    <button class="log-clear-btn" id="logClearBtn" title="Clear logs">🗑️</button>
+                    <button class="log-close-btn" id="logCloseBtn" title="Close">✕</button>
                 </div>
             </div>
             <div class="log-groups" id="logGroups">
                 <div class="log-group" id="logGroupERROR">
                     <div class="log-group-header log-level-error">
-                        <span class="log-group-icon">Ã°Å¸â€Â´</span>
+                        <span class="log-group-icon">🔴</span>
                         <span class="log-group-title">Errors</span>
                         <span class="log-group-count" id="logCountERROR">0</span>
                     </div>
@@ -589,7 +589,7 @@
                 </div>
                 <div class="log-group" id="logGroupWARNING">
                     <div class="log-group-header log-level-warning">
-                        <span class="log-group-icon">Ã°Å¸Å¸Â¡</span>
+                        <span class="log-group-icon">🟡</span>
                         <span class="log-group-title">Warnings</span>
                         <span class="log-group-count" id="logCountWARNING">0</span>
                     </div>
@@ -597,7 +597,7 @@
                 </div>
                 <div class="log-group" id="logGroupINFO">
                     <div class="log-group-header log-level-info">
-                        <span class="log-group-icon">Ã°Å¸â€Âµ</span>
+                        <span class="log-group-icon">🔵</span>
                         <span class="log-group-title">Info</span>
                         <span class="log-group-count" id="logCountINFO">0</span>
                     </div>
@@ -605,7 +605,7 @@
                 </div>
                 <div class="log-group" id="logGroupDEBUG">
                     <div class="log-group-header log-level-debug">
-                        <span class="log-group-icon">Ã¢Å¡Âª</span>
+                        <span class="log-group-icon">⚪</span>
                         <span class="log-group-title">Debug</span>
                         <span class="log-group-count" id="logCountDEBUG">0</span>
                     </div>
@@ -618,12 +618,12 @@
     <!-- Footer -->
     <footer class="footer">
         <div class="footer-content">
-            <span class="footer-logo">Ã°Å¸Ââ€¹ WhaleFlow</span>
-            <span class="footer-divider">Ã¢â‚¬Â¢</span>
+            <span class="footer-logo">🐋 WhaleFlow</span>
+            <span class="footer-divider">•</span>
             <span>Hyperliquid Whale Tracker</span>
-            <span class="footer-divider">Ã¢â‚¬Â¢</span>
+            <span class="footer-divider">•</span>
             <span>Data from <a href="https://hyperliquid.xyz" target="_blank" rel="noopener">Hyperliquid API</a></span>
-            <span class="footer-divider">Ã¢â‚¬Â¢</span>
+            <span class="footer-divider">•</span>
             <span class="footer-disclaimer">Not financial advice</span>
         </div>
     </footer>
