@@ -1,7 +1,7 @@
 """
 WhaleFlow Persistent Data Collector v3
 8-Signal Reversal Radar + Mega Whale tracking + Funding Flip
-Runs as background daemon â€” collects continuously even when no user is viewing.
+Runs as background daemon Ã¢â‚¬â€ collects continuously even when no user is viewing.
 """
 
 import threading
@@ -109,7 +109,7 @@ class MemoryLogHandler(logging.Handler):
         self.buffer = deque(maxlen=capacity)
         self._broadcaster = None
     def set_broadcaster(self, fn):
-        """Set callback: fn(entry_dict) — called on every log emit."""
+        """Set callback: fn(entry_dict) â€” called on every log emit."""
         self._broadcaster = fn
     def emit(self, record):
         entry = {
@@ -328,7 +328,7 @@ class HyperliquidCollector:
             'alert_label': 'Quiet',
             'regime': {
                 'score': 50,
-                'label': 'ANALYZING…',
+                'label': 'ANALYZINGâ€¦',
                 'css_class': '',
                 'last_change_time': 0.0,
                 'price_history': [],
@@ -378,7 +378,7 @@ class HyperliquidCollector:
         else:
             logger.info('Embedded FastAPI server disabled for Streamlit mode')
         
-        logger.info("✅ WhaleFlow Collector System Started")
+        logger.info("âœ… WhaleFlow Collector System Started")
         
         # Wire live log broadcasting through the local WS
         def _broadcast_log(entry):
@@ -1561,13 +1561,13 @@ class HyperliquidCollector:
                 result = 'bearish'
                 d['signals']['volume_climax'] = {
                     'active': True, 'side': 'bearish',
-                    'detail': f"Buy volume {ratio:.1f}x avg â€” possible blow-off top",
+                    'detail': f"Buy volume {ratio:.1f}x avg Ã¢â‚¬â€ possible blow-off top",
                 }
             elif buy_pct < CONFIG['volume_climax_buy_low']:
                 result = 'bullish'
                 d['signals']['volume_climax'] = {
                     'active': True, 'side': 'bullish',
-                    'detail': f"Sell volume {ratio:.1f}x avg â€” possible capitulation bottom",
+                    'detail': f"Sell volume {ratio:.1f}x avg Ã¢â‚¬â€ possible capitulation bottom",
                 }
             else:
                 d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
@@ -1778,13 +1778,13 @@ class HyperliquidCollector:
             result = 'bearish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bearish',
-                'detail': f"Funding +{rate_pct:.4f}% â€” longs overleveraged",
+                'detail': f"Funding +{rate_pct:.4f}% Ã¢â‚¬â€ longs overleveraged",
             }
         elif rate_pct < -t:
             result = 'bullish'
             d['signals']['funding_extreme'] = {
                 'active': True, 'side': 'bullish',
-                'detail': f"Funding {rate_pct:.4f}% â€” shorts overleveraged",
+                'detail': f"Funding {rate_pct:.4f}% Ã¢â‚¬â€ shorts overleveraged",
             }
         else:
             d['signals']['funding_extreme'] = {'active': False, 'side': None, 'detail': ''}
@@ -1955,7 +1955,7 @@ class HyperliquidCollector:
         port = int(os.environ.get("PORT", CONFIG['ws_port']))
         host = "0.0.0.0"
         
-        logger.info(f"🚀 Launching Cloud-Ready server on {host}:{port}")
+        logger.info(f"ðŸš€ Launching Cloud-Ready server on {host}:{port}")
         uvicorn.run(app, host=host, port=port, log_level="warning")
 
     async def _broadcast_local(self, msg_str):
