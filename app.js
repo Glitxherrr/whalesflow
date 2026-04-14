@@ -478,13 +478,9 @@ class WhaleFlowDashboard {
             this.elements.forceRefreshBtn.addEventListener('click', () => {
                 this.showToast('Performing hard refresh...');
                 setTimeout(() => {
-                    // Force reload bypassing cache
-                    window.location.reload(true);
-                    
-                    // Fallback using timestamp query as some browsers ignore reload(true)
-                    const url = new URL(window.location.href);
-                    url.searchParams.set('force_refresh', Date.now().toString());
-                    window.location.href = url.toString();
+                    // Just reload the page. In most browsers, this is sufficient.
+                    // We avoid manual URL manipulation to prevent issues in srcdoc/iframe environments.
+                    window.location.reload();
                 }, 500);
             });
         }
