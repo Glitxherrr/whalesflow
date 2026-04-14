@@ -726,7 +726,8 @@ class HyperliquidCollector:
 
     async def _ws_loop_binance(self):
         async def spot_loop():
-            url = "wss://stream.binance.com:9443/ws"
+            # Using US-compliant public API for spot
+            url = "wss://stream.binance.us:9443/ws"
             async with websockets.connect(url) as ws:
                 self.exchange_status['BIN']['connected'] = True
                 streams = [f"{c.lower()}usdt@aggTrade" for c in self.coins]
@@ -743,8 +744,8 @@ class HyperliquidCollector:
                         self.exchange_status['BIN']['last_msg'] = time.time()
 
         async def futures_loop():
-            # Using fstream.binance.com for futures
-            url = "wss://fstream.binance.com/ws"
+            # Using data-stream.binance.com which is often more accessible from US cloud environments
+            url = "wss://data-stream.binance.com/ws"
             async with websockets.connect(url) as ws:
                 streams = [f"{c.lower()}usdt@aggTrade" for c in self.coins]
                 payload = {"method": "SUBSCRIBE", "params": streams, "id": 1}
