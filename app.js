@@ -76,8 +76,8 @@ class WhaleFlowDashboard {
         }, 15000);
         this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
 
-        // Absorption engine: snapshot every 5 minutes, evaluate every 15 seconds
-        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 300000); // 5 min
+        // Absorption engine: snapshot every 15 seconds, evaluate every 15 seconds
+        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 15000); // 15s
         this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 15000); // 15s
 
         // Reversal Radar: evaluate all signals every 15 seconds
@@ -245,14 +245,23 @@ class WhaleFlowDashboard {
 
     _loadCoinThreshold(coin) {
         try {
-            const stored = localStorage.getItem(`whaleflow_threshold_${coin}`);
-            if (stored) {
-                this.whaleThreshold = parseFloat(stored);
+            // Priority: 1. Server State (synced) 2. Local Storage (browser) 3. Defaults
+            let threshold = null;
+            if (this.serverThresholds && this.serverThresholds[coin]) {
+                threshold = this.serverThresholds[coin];
+            } else {
+                const stored = localStorage.getItem(`whaleflow_threshold_${coin}`);
+                if (stored) threshold = parseFloat(stored);
+            }
+
+            if (threshold !== null) {
+                this.whaleThreshold = threshold;
             } else {
                 // Apply defaults if no user override
                 const defaults = { BTC: 50000, ETH: 10000, SOL: 5000, PAXG: 10, XRP: 50 };
                 this.whaleThreshold = defaults[coin] || 100;
             }
+
             if (this.elements.whaleThreshold) {
                 this.elements.whaleThreshold.value = this.whaleThreshold;
             }
@@ -360,11 +369,21 @@ class WhaleFlowDashboard {
             const val = parseInt(e.target.value, 10);
             if (!isNaN(val) && val > 0) {
                 this.whaleThreshold = val;
-                // Save it for this coin specifically
+                // Save locally
                 localStorage.setItem(`whaleflow_threshold_${this.currentCoin}`, val.toString());
+                
+                // Sync to Server
+                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                    this.ws.send(JSON.stringify({
+                        method: 'set_threshold',
+                        coin: this.currentCoin,
+                        value: val
+                    }));
+                }
+
                 this.reprocessTrades();
                 this.renderOrderbook();
-                this.showToast(`🐋 Whale threshold for ${this.currentCoin} set to $${this.formatCompact(val)}`);
+                this.showToast(`🐋 Whale threshold for ${this.currentCoin} set to $${this.formatCompact(val)} (Synced)`);
             }
         });
 
@@ -874,7 +893,7 @@ class WhaleFlowDashboard {
                 time: now,
                 funding: meta.funding,
             });
-            if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
+            if (fundingStore.fundingHistory.length > 6000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-6000);
         });
 
         const activeMeta = this.allCoinMeta.get(this.currentCoin);
@@ -1211,7 +1230,7 @@ class WhaleFlowDashboard {
                 // Push funding history for ALL coins (not just active)
                 const fundingStore = this.getCoinData(coin);
                 fundingStore.fundingHistory.push({ time: now, funding: coinMeta.funding });
-                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
+                if (fundingStore.fundingHistory.length > 6000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-6000);
             });
 
             const activeMeta = this.allCoinMeta.get(this.currentCoin);
@@ -1256,8 +1275,9 @@ class WhaleFlowDashboard {
             });
 
             // Rolling 1h window: keep last 12 snapshots (5min * 12 = 60min)
-            if (d.abs.snapshots.length > 12) {
-                d.abs.snapshots = d.abs.snapshots.slice(-12);
+            // Keep 240 snapshots (15s interval * 240 = 60 minutes)
+            if (d.abs.snapshots.length > 240) {
+                d.abs.snapshots = d.abs.snapshots.slice(-240);
             }
 
             // Record volume bucket for climax detection
@@ -2384,6 +2404,19 @@ class WhaleFlowDashboard {
     loadServerState(state) {
         if (!state || !state.coins) return;
 
+        // Load Global Server Settings
+        if (state.whale_thresholds) {
+            this.serverThresholds = state.whale_thresholds;
+            // Load specific threshold for the current coin from server immediately
+            if (this.serverThresholds[this.currentCoin]) {
+                const val = this.serverThresholds[this.currentCoin];
+                if (val !== this.whaleThreshold) {
+                    this.whaleThreshold = val;
+                    if (this.elements.whaleThreshold) this.elements.whaleThreshold.value = val;
+                }
+            }
+        }
+
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
         this._loadCurrentFromStorage();
@@ -2403,27 +2436,16 @@ class WhaleFlowDashboard {
                 d.buyCount = serverCoin.buy_count;
                 d.sellCount = serverCoin.sell_count;
 
-                // Re-hydrate the current accumulation seamlessly without double-counting
-                if (this.currentModeClearTime > 0) {
-                    // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
-                    const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
-                    
-                    for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
-                        const t = d.whaleTrades[i];
-                        if (t.time > stitchTime) {
-                            if (t.side === 'BUY') {
-                                d.currentBuyVolume += t.value;
-                                d.currentBuyCount++;
-                            } else {
-                                d.currentSellVolume += t.value;
-                                d.currentSellCount++;
-                            }
-                        }
-                    }
-                    if (d.whaleTrades.length > 0) {
-                        d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
-                    }
+                // Direct Hydration of Accumulation (Source of Truth: Server)
+                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
+                d.currentSellVolume = serverCoin.current_sell_vol || 0;
+                d.currentBuyCount = serverCoin.current_buy_count || 0;
+                d.currentSellCount = serverCoin.current_sell_count || 0;
+
+                if (d.whaleTrades.length > 0) {
+                    d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
                 }
+
                 this._saveCurrentToStorage();
 
                 d.lastPressureSnapshot = {
@@ -2431,6 +2453,18 @@ class WhaleFlowDashboard {
                     sells: serverCoin.total_sell_vol
                 };
             }
+
+            // Market Metrics - Immediate Hydration
+            d.markPx = serverCoin.mark_px || d.markPx;
+            d.oraclePx = serverCoin.oracle_px || d.oraclePx;
+            d.openInterest = serverCoin.open_interest || d.openInterest;
+            d.dayVolume = serverCoin.day_volume || d.dayVolume;
+            d.lastTradePrice = serverCoin.last_trade_price || d.lastTradePrice;
+            d.funding = serverCoin.funding || d.funding;
+            
+            // Re-hydrate current buckets (for climax/regime scoring)
+            d.currentBucketBuyTotal = serverCoin.current_bucket_buy || 0;
+            d.currentBucketSellTotal = serverCoin.current_bucket_sell || 0;
             
             if (serverCoin.funding_history && serverCoin.funding_history.length > 0) {
                 d.fundingHistory = serverCoin.funding_history.map(h => ({

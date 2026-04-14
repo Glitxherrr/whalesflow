@@ -71,8 +71,8 @@ CONFIG = {
     'funding_poll_interval': 15,
     'signal_eval_interval': 15,
     'signal_initial_delay': 30,
-    'snapshot_interval': 60,
-    'snapshot_initial_delay': 60,
+    'snapshot_interval': 15,
+    'snapshot_initial_delay': 15,
     'pressure_interval': 30,
     'signal_decay_initiative': 300,
     'signal_decay_clustering': 180,
@@ -323,6 +323,9 @@ class HyperliquidCollector:
             self.last_trade_update = state.get('last_trade_update', self.last_trade_update)
             if 'exchange_status' in state:
                 self.exchange_status.update(state['exchange_status'])
+            
+            if 'whale_thresholds' in state:
+                self.whale_thresholds.update(state['whale_thresholds'])
             
             # Restore log buffer
             if state.get('log_buffer'):
@@ -1758,6 +1761,7 @@ class HyperliquidCollector:
                 'last_trade_update': self.last_trade_update,
                 'snapshot_loaded': self.snapshot_loaded,
                 'exchange_status': self.exchange_status,
+                'whale_thresholds': self.whale_thresholds,
                 'log_buffer': _mh.get_entries(),
                 'coins': {}
             }
@@ -1837,6 +1841,14 @@ class HyperliquidCollector:
                                 self.data[c]['current_sell_vol'] = 0.0
                                 self.data[c]['current_buy_count'] = 0
                                 self.data[c]['current_sell_count'] = 0
+                    elif data.get('method') == 'set_threshold':
+                        coin = data.get('coin')
+                        val = data.get('value')
+                        if coin and val:
+                            with self._data_lock:
+                                self.whale_thresholds[coin] = float(val)
+                            # Force a snapshot save soon to persist this
+                            logger.info(f"Setting whale threshold for {coin} to ${val}")
                 except Exception:
                     pass
         except Exception:
