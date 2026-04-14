@@ -69,7 +69,7 @@ logger.addHandler(_mh)
 # ===== CONFIGURATION =====
 CONFIG = {
     'coins': ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'],
-    'whale_thresholds': {'BTC': 50000, 'ETH': 10000, 'SOL': 100, 'PAXG': 10, 'XRP': 50},
+    'whale_thresholds': {'BTC': 5, 'ETH': 5, 'SOL': 5, 'PAXG': 5, 'XRP': 5},
     'mega_thresholds': {'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000, 'PAXG': 200000, 'XRP': 300000},
     'ws_port': 7860,  # Default for Hugging Face is 7860
     'funding_poll_interval': 15,
@@ -1439,7 +1439,11 @@ class HyperliquidCollector:
                     sell_d = d['total_sell_vol'] - d['last_pressure_snap']['sells']
                     d['pressure_history'].append({
                         'time': int(time.time() * 1000),
-                        'buys': buy_d, 'sells': sell_d, 'net': buy_d - sell_d,
+                        'buys': buy_d, 
+                        'sells': sell_d, 
+                        'net': buy_d - sell_d,
+                        'side': d['abs_side'],
+                        'detail': f"{'Sells' if d['abs_side'] == 'bullish' else 'Buys'} absorbed" if d['abs_detected'] else '',
                     })
                     d['last_pressure_snap'] = {'buys': d['total_buy_vol'], 'sells': d['total_sell_vol']}
 

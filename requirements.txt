@@ -2,9 +2,3 @@ fastapi
 uvicorn
 websockets
 requests
-pandas
-numpy
-python-binance
-pybit
-python-gateio
-pymexc
