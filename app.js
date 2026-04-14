@@ -99,6 +99,16 @@ class WhaleFlowDashboard {
         this._logEntries = [];
         this._logSidebarOpen = false;
 
+        // Local status for browser-managed exchanges
+        this.localExchangeStatus = {
+            'BIN': { connected: false, last_msg: 0 },
+            'BYB': { connected: false, last_msg: 0 },
+            'OKX': { connected: false, last_msg: 0 },
+            'KRK': { connected: false, last_msg: 0 },
+            'CB':  { connected: false, last_msg: 0 }
+        };
+        this._binanceGeoWarned = false;
+
         // Load server-accumulated state if available (Streamlit deployment)
         if (window.__SERVER_STATE__) {
             this.loadServerState(window.__SERVER_STATE__);
@@ -258,7 +268,7 @@ class WhaleFlowDashboard {
                 this.whaleThreshold = threshold;
             } else {
                 // Apply defaults if no user override
-                const defaults = { BTC: 50000, ETH: 10000, SOL: 5000, PAXG: 10, XRP: 50 };
+                const defaults = { BTC: 50, ETH: 50, SOL: 50, PAXG: 50, XRP: 50 };
                 this.whaleThreshold = defaults[coin] || 100;
             }
 
@@ -732,17 +742,38 @@ class WhaleFlowDashboard {
     }
 
     handleExternalTrade(t) {
+        if (t.exchange && this.localExchangeStatus[t.exchange]) {
+            this.localExchangeStatus[t.exchange].last_msg = Date.now() / 1000;
+            this.localExchangeStatus[t.exchange].connected = true;
+        }
         this.handleTrades([t]);
     }
+
 
     connectPublicExchanges() {
         console.log('Connecting to public exchanges natively from browser... (Binance, OKX, Kraken, Bybit, Coinbase)');
         const coins = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'];
 
+        const setStatus = (ex, conn) => {
+            if (this.localExchangeStatus[ex]) {
+                this.localExchangeStatus[ex].connected = conn;
+                if (conn) this.localExchangeStatus[ex].last_msg = Date.now() / 1000;
+            }
+        };
+
         // 1. Binance
         try {
             const binanceStreams = coins.map(c => `${c.toLowerCase()}usdt@aggTrade`).join('/');
             this.binanceWs = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${binanceStreams}`);
+            this.binanceWs.onopen = () => setStatus('BIN', true);
+            this.binanceWs.onclose = () => setStatus('BIN', false);
+            this.binanceWs.onerror = () => {
+                setStatus('BIN', false);
+                if (!this._binanceGeoWarned) {
+                    this.showToast('⚠️ Binance connection failed (possible Geo-block)', 'warn');
+                    this._binanceGeoWarned = true;
+                }
+            };
             this.binanceWs.onmessage = (e) => {
                 try {
                     const msg = JSON.parse(e.data);
@@ -756,15 +787,18 @@ class WhaleFlowDashboard {
                     }
                 } catch(err){}
             };
-        } catch(err){}
+        } catch(err){ setStatus('BIN', false); }
 
         // 2. Bybit
         try {
             this.bybitWs = new WebSocket("wss://stream.bybit.com/v5/public/linear");
             this.bybitWs.onopen = () => {
+                setStatus('BYB', true);
                 const args = coins.map(c => `publicTrade.${c}USDT`);
                 this.bybitWs.send(JSON.stringify({op: "subscribe", args: args}));
             };
+            this.bybitWs.onclose = () => setStatus('BYB', false);
+            this.bybitWs.onerror = () => setStatus('BYB', false);
             this.bybitWs.onmessage = (e) => {
                 try {
                     const msg = JSON.parse(e.data);
@@ -780,15 +814,18 @@ class WhaleFlowDashboard {
                     }
                 } catch(err){}
             };
-        } catch(err){}
+        } catch(err){ setStatus('BYB', false); }
 
         // 3. OKX
         try {
             this.okxWs = new WebSocket("wss://ws.okx.com:8443/ws/v5/public");
             this.okxWs.onopen = () => {
+                setStatus('OKX', true);
                 const args = coins.map(c => ({channel: "trades", instId: `${c}-USDT-SWAP`}));
                 this.okxWs.send(JSON.stringify({op: "subscribe", args: args}));
             };
+            this.okxWs.onclose = () => setStatus('OKX', false);
+            this.okxWs.onerror = () => setStatus('OKX', false);
             this.okxWs.onmessage = (e) => {
                 try {
                     const msg = JSON.parse(e.data);
@@ -804,18 +841,21 @@ class WhaleFlowDashboard {
                     }
                 } catch(err){}
             };
-        } catch(err){}
+        } catch(err){ setStatus('OKX', false); }
 
         // 4. Kraken
         try {
             this.krakenWs = new WebSocket("wss://ws.kraken.com/v2");
             this.krakenWs.onopen = () => {
+                setStatus('KRK', true);
                 const args = coins.map(c => `${c}/USD`);
                 this.krakenWs.send(JSON.stringify({
                     method: "subscribe",
                     params: { channel: "trade", symbol: args }
                 }));
             };
+            this.krakenWs.onclose = () => setStatus('KRK', false);
+            this.krakenWs.onerror = () => setStatus('KRK', false);
             this.krakenWs.onmessage = (e) => {
                 try {
                     const msg = JSON.parse(e.data);
@@ -832,12 +872,13 @@ class WhaleFlowDashboard {
                     }
                 } catch(err){}
             };
-        } catch(err){}
+        } catch(err){ setStatus('KRK', false); }
 
         // 5. Coinbase
         try {
             this.coinbaseWs = new WebSocket("wss://ws-feed.exchange.coinbase.com");
             this.coinbaseWs.onopen = () => {
+                setStatus('CB', true);
                 const args = coins.map(c => `${c}-USD`);
                 this.coinbaseWs.send(JSON.stringify({
                     type: "subscribe",
@@ -845,6 +886,8 @@ class WhaleFlowDashboard {
                     channels: ["matches"]
                 }));
             };
+            this.coinbaseWs.onclose = () => setStatus('CB', false);
+            this.coinbaseWs.onerror = () => setStatus('CB', false);
             this.coinbaseWs.onmessage = (e) => {
                 try {
                     const msg = JSON.parse(e.data);
@@ -3079,11 +3122,25 @@ class WhaleFlowDashboard {
 
         // Exchange status dots
         const now = Date.now() / 1000;
-        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'].forEach(ex => {
+        ['HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 'BFX', 'BGT'].forEach(ex => {
             const el = this.elements['exch' + ex];
             if (!el) return;
-            const info = (s.exchange_status || {})[ex];
-            if (!info) return;
+            
+            // Prioritize local frontend status for browser-managed exchanges
+            let info = (s.exchange_status || {})[ex];
+            if (this.localExchangeStatus[ex]) {
+                const local = this.localExchangeStatus[ex];
+                // If local is connected, we prefer local info. 
+                // If local is disconnected but server is connected (e.g. Coinbase), server info prevails.
+                if (local.connected || (local.last_msg > (info ? info.last_msg : 0))) {
+                    info = local;
+                }
+            }
+            
+            if (!info) {
+                // Not implementation in either -> skip or mark down
+                return;
+            }
 
             const ageEl = el.querySelector('.exch-age');
             el.className = 'exch-item';

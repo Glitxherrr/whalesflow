@@ -69,7 +69,7 @@ logger.addHandler(_mh)
 # ===== CONFIGURATION =====
 CONFIG = {
     'coins': ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'],
-    'whale_thresholds': {'BTC': 5, 'ETH': 5, 'SOL': 5, 'PAXG': 5, 'XRP': 5},
+    'whale_thresholds': {'BTC': 50, 'ETH': 50, 'SOL': 50, 'PAXG': 50, 'XRP': 50},
     'mega_thresholds': {'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000, 'PAXG': 200000, 'XRP': 300000},
     'ws_port': 7860,  # Default for Hugging Face is 7860
     'funding_poll_interval': 30,
@@ -165,7 +165,7 @@ class HyperliquidCollector:
         # Exchange health tracking
         self.exchanges = [
             'HL', 'BIN', 'BYB', 'OKX', 'KRK', 'CB', 
-            'DRB', 'BFX', 'BGT', 'MEXC', 'UPB', 'GATE'
+            'BFX', 'BGT'
         ]
         self.exchange_status = {
             ex: {'connected': False, 'last_msg': 0, 'last_error': ''}
@@ -265,7 +265,7 @@ class HyperliquidCollector:
         # Rest of the threads
         threading.Thread(target=self._run_ws, daemon=True).start()
         threading.Thread(target=self._run_ws_coinbase, daemon=True).start()
-        threading.Thread(target=self._run_ws_bitget, daemon=True).start()
+        # threading.Thread(target=self._run_ws_bitget, daemon=True).start() # KEEP BGT RED as requested
         threading.Thread(target=self._run_ws_bitfinex, daemon=True).start()
         threading.Thread(target=self._run_funding, daemon=True).start()
         threading.Thread(target=self._run_signals, daemon=True).start()
@@ -326,8 +326,9 @@ class HyperliquidCollector:
             self.started_at = state.get('started_at', self.started_at)
             self.last_funding_update = state.get('last_funding_update', self.last_funding_update)
             self.last_trade_update = state.get('last_trade_update', self.last_trade_update)
-            if 'exchange_status' in state:
-                self.exchange_status.update(state['exchange_status'])
+            # We skip 'exchange_status' here to ensure system health is live and not loaded from hours ago
+            # which causes "ghost" green dots or stale latency.
+
             
             if 'whale_thresholds' in state:
                 self.whale_thresholds.update(state['whale_thresholds'])
