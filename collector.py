@@ -509,7 +509,7 @@ class HyperliquidCollector:
         async with websockets.connect('wss://api.hyperliquid.xyz/ws', ping_interval=20, ping_timeout=10) as ws:
             self.connected = True
             self.exchange_status['HL']['connected'] = True
-            logger.info("WS HL connected")
+            logger.info("[SUCCESS] Hyperliquid Future connected")
 
             for coin in self.coins:
                 await ws.send(json.dumps({
@@ -548,7 +548,7 @@ class HyperliquidCollector:
         url = "wss://advanced-trade-ws.coinbase.com"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['CB']['connected'] = True
-            logger.info("WS Coinbase (Spot + Perp) connected")
+            logger.info("[SUCCESS] Coinbase Spot + Future connected")
             # Subscribe Spot and International Perps
             symbols = [f"{coin}-USDT" for coin in self.coins]
             symbols += [f"{coin}-PERP" for coin in self.coins if coin in ['BTC', 'ETH', 'SOL', 'XRP']]
@@ -598,7 +598,7 @@ class HyperliquidCollector:
         url = "wss://api-pub.bitfinex.com/ws/2"
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BFX']['connected'] = True
-            logger.info("WS Bitfinex connected")
+            logger.info("[SUCCESS] Bitfinex Spot connected")
             # Channel mapping
             chan_map = {}
             for coin in self.coins:
@@ -674,6 +674,7 @@ class HyperliquidCollector:
         # Removed extra_headers as some environments' websockets lib pass it incorrectly to lower levels
         async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
             self.exchange_status['BGT']['connected'] = True
+            logger.info("[SUCCESS] Bitget Spot + Future connected")
             # Subscribe Spot and Futures
             args = []
             for coin in self.coins:
@@ -730,6 +731,7 @@ class HyperliquidCollector:
             url = "wss://stream.binance.us:9443/ws"
             async with websockets.connect(url) as ws:
                 self.exchange_status['BIN']['connected'] = True
+                logger.info("[SUCCESS] Binance Spot connected")
                 streams = [f"{c.lower()}usdt@aggTrade" for c in self.coins]
                 payload = {"method": "SUBSCRIBE", "params": streams, "id": 1}
                 await ws.send(json.dumps(payload))
@@ -747,6 +749,7 @@ class HyperliquidCollector:
             # Using data-stream.binance.com which is often more accessible from US cloud environments
             url = "wss://data-stream.binance.com/ws"
             async with websockets.connect(url) as ws:
+                logger.info("[SUCCESS] Binance Future connected")
                 streams = [f"{c.lower()}usdt@aggTrade" for c in self.coins]
                 payload = {"method": "SUBSCRIBE", "params": streams, "id": 1}
                 await ws.send(json.dumps(payload))
@@ -780,6 +783,7 @@ class HyperliquidCollector:
             url = "wss://stream.bybit.com/v5/public/linear"
             async with websockets.connect(url) as ws:
                 self.exchange_status['BYB']['connected'] = True
+                logger.info("[SUCCESS] Bybit Future connected")
                 args = [f"publicTrade.{c}USDT" for c in self.coins]
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 async for raw in ws:
@@ -796,6 +800,7 @@ class HyperliquidCollector:
         async def spot_loop():
             url = "wss://stream.bybit.com/v5/public/spot"
             async with websockets.connect(url) as ws:
+                logger.info("[SUCCESS] Bybit Spot connected")
                 args = [f"publicTrade.{c}USDT" for c in self.coins]
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 async for raw in ws:
@@ -828,6 +833,7 @@ class HyperliquidCollector:
         url = "wss://ws.okx.com:8443/ws/v5/public"
         async with websockets.connect(url) as ws:
             self.exchange_status['OKX']['connected'] = True
+            logger.info("[SUCCESS] OKX Spot + Future connected")
             args = []
             for c in self.coins:
                 args.append({"channel": "trades", "instId": f"{c}-USDT"})
@@ -862,6 +868,7 @@ class HyperliquidCollector:
             url = "wss://ws.kraken.com/v2"
             async with websockets.connect(url) as ws:
                 self.exchange_status['KRK']['connected'] = True
+                logger.info("[SUCCESS] Kraken Spot connected")
                 pairs = [f"{c}/USD" for c in self.coins]
                 await ws.send(json.dumps({
                     "method": "subscribe",
@@ -883,6 +890,7 @@ class HyperliquidCollector:
         async def futures_loop():
             url = "wss://futures.kraken.com/ws/v1"
             async with websockets.connect(url) as ws:
+                logger.info("[SUCCESS] Kraken Future connected")
                 # Kraken Futures uses XBT instead of BTC
                 kraken_coins = []
                 for c in self.coins:
@@ -1542,6 +1550,7 @@ class HyperliquidCollector:
         url = "wss://www.deribit.com/ws/api/v2"
         async with websockets.connect(url) as ws:
             self.exchange_status['DRB']['connected'] = True
+            logger.info("[SUCCESS] Deribit Future connected")
             channels = []
             for c in ['BTC', 'ETH', 'SOL']:
                 if c in self.coins:
@@ -1579,6 +1588,7 @@ class HyperliquidCollector:
         url = "wss://wbs.mexc.com/ws"
         async with websockets.connect(url) as ws:
             self.exchange_status['MEXC']['connected'] = True
+            logger.info("[SUCCESS] MEXC Spot connected")
             params = [f"spot@public.deals.v3.api@{c}USDT" for c in self.coins]
             await ws.send(json.dumps({"method": "SUBSCRIPTION", "params": params}))
             async for raw in ws:
@@ -1612,6 +1622,7 @@ class HyperliquidCollector:
         url = "wss://api.gateio.ws/ws/v4/"
         async with websockets.connect(url) as ws:
             self.exchange_status['GATE']['connected'] = True
+            logger.info("[SUCCESS] Gate.io Spot connected")
             symbols = [f"{c}_USDT" for c in self.coins]
             await ws.send(json.dumps({
                 "time": int(time.time()), "channel": "spot.trades",
@@ -1636,6 +1647,7 @@ class HyperliquidCollector:
         url = "wss://fx-ws.gateio.ws/v4/ws/usdt"
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+                logger.info("[SUCCESS] Gate.io Future connected")
                 symbols = [f"{c}_USDT" for c in self.coins]
                 await ws.send(json.dumps({
                     "time": int(time.time()), "channel": "futures.trades",
@@ -1672,6 +1684,7 @@ class HyperliquidCollector:
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 self.exchange_status['UPB']['connected'] = True
+                logger.info("[SUCCESS] Upbit Spot connected")
                 codes = [f"KRW-{c}" for c in self.coins]
                 # Upbit Format: [{"ticket":"test"},{"type":"trade","codes":["KRW-BTC"]}]
                 await ws.send(json.dumps([{"ticket": "whaleflow"}, {"type": "trade", "codes": codes}]))
@@ -1814,6 +1827,31 @@ class HyperliquidCollector:
                         'channel': 'full_state',
                         'data': snapshot
                     }))
+                    
+                    # Log connected exchanges for dashboard refresh visibility
+                    status_log = []
+                    # We map internal keys to descriptive Spot/Future names
+                    display_names = {
+                        'HL': 'Hyperliquid Future',
+                        'BIN': 'Binance Spot/Future',
+                        'BYB': 'Bybit Spot/Future',
+                        'OKX': 'OKX Spot/Future',
+                        'KRK': 'Kraken Spot/Future',
+                        'CB': 'Coinbase Spot/Future',
+                        'DRB': 'Deribit Future',
+                        'BFX': 'Bitfinex Spot',
+                        'BGT': 'Bitget Spot/Future',
+                        'MEXC': 'MEXC Spot',
+                        'UPB': 'Upbit Spot',
+                        'GATE': 'Gate.io Spot/Future'
+                    }
+                    for ex in self.exchanges:
+                        conn = self.exchange_status[ex]['connected']
+                        name = display_names.get(ex, ex)
+                        status = "Connected" if conn else "Disconnected"
+                        status_log.append(f"{name}: {status}")
+                    
+                    logger.info(f"Dashboard Refresh - Exchange Status: {', '.join(status_log)}")
 
                 while True:
                     message = await websocket.receive_text()
