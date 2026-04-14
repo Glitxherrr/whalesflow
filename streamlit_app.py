@@ -53,7 +53,6 @@ def run_embedded_app() -> None:
         '<script src="app.js"></script>',
         """<script>
 window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
-window.__STREAMLIT_MODE__ = true;
 
 """
         + js
@@ -66,14 +65,6 @@ window.__STREAMLIT_MODE__ = true;
             "__SERVER_STATE_PLACEHOLDER__",
             json.dumps(state),
         )
-
-    clear_col, info_col = st.columns([1, 4])
-    with clear_col:
-        if st.button("Clear Current Data", use_container_width=True):
-            collector.clear_current_state()
-            st.rerun()
-    with info_col:
-        st.caption("Streamlit mode: use this button to reset Current mode for all devices.")
 
     def render_dashboard() -> None:
         st.components.v1.html(

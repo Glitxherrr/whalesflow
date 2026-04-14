@@ -291,7 +291,6 @@ class HyperliquidCollector:
             'current_sell_vol': 0.0,
             'current_buy_count': 0,
             'current_sell_count': 0,
-            'current_whale_trades': deque(maxlen=200),
             'whale_buckets': deque(maxlen=1440),
             'mega_whales': deque(maxlen=500),
             'abs_cum_buy': 0.0,
@@ -458,8 +457,6 @@ class HyperliquidCollector:
 
                     if sc.get('whale_trades'):
                         d['whale_trades'] = deque(sc['whale_trades'][:2000], maxlen=2000)
-                    if sc.get('current_whale_trades'):
-                        d['current_whale_trades'] = deque(sc['current_whale_trades'][:200], maxlen=200)
                     if sc.get('mega_whales'):
                         d['mega_whales'] = deque(sc['mega_whales'][:500], maxlen=500)
                     if sc.get('whale_buckets'):
@@ -1093,7 +1090,6 @@ class HyperliquidCollector:
                         d['current_sell_vol'] += value
                         d['current_sell_count'] += 1
 
-                    d['current_whale_trades'].appendleft(whale_entry)
                     self._check_clustering(coin)
 
     def _check_clustering(self, coin):
@@ -1841,7 +1837,6 @@ class HyperliquidCollector:
                     'current_sell_vol': d['current_sell_vol'],
                     'current_buy_count': d['current_buy_count'],
                     'current_sell_count': d['current_sell_count'],
-                    'current_whale_trades': list(d['current_whale_trades']),
                     'current_since': d.get('current_since', 0),
                     'funding': d['funding'],
                     'funding_history': list(d['funding_history']),
@@ -1877,28 +1872,6 @@ class HyperliquidCollector:
     def _get_full_state_snapshot(self):
         return self.get_state()
 
-    def clear_current_state(self):
-        with self._data_lock:
-            for c in self.coins:
-                self.data[c]['current_buy_vol'] = 0.0
-                self.data[c]['current_sell_vol'] = 0.0
-                self.data[c]['current_buy_count'] = 0
-                self.data[c]['current_sell_count'] = 0
-                self.data[c]['current_whale_trades'].clear()
-                self.data[c]['current_since'] = time.time() * 1000
-            logger.info("Current accumulation cleared by user")
-            self._save_snapshot()
-            snapshot = self._get_full_state_snapshot()
-        if self.local_loop and self.local_clients:
-            asyncio.run_coroutine_threadsafe(
-                self._broadcast_local(json.dumps({
-                    'channel': 'full_state',
-                    'data': snapshot
-                })),
-                self.local_loop
-            )
-        return snapshot
-
     def _run_local_server(self):
         """Runs the FastAPI server for WebSockets and Health Checks"""
         global app
@@ -1906,11 +1879,6 @@ class HyperliquidCollector:
         @app.get("/health")
         async def health():
             return {"status": "ok", "uptime": time.time() - self.started_at}
-
-        @app.post("/current/clear")
-        async def clear_current():
-            snapshot = self.clear_current_state()
-            return {"ok": True, "current_since": snapshot['coins'][self.coins[0]].get('current_since', 0)}
 
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
@@ -1958,7 +1926,15 @@ class HyperliquidCollector:
                         if data.get('method') == 'ping':
                             await websocket.send_text(json.dumps({'channel': 'pong'}))
                         elif data.get('method') == 'clear_current':
-                            self.clear_current_state()
+                            with self._data_lock:
+                                for c in self.coins:
+                                    self.data[c]['current_buy_vol'] = 0.0
+                                    self.data[c]['current_sell_vol'] = 0.0
+                                    self.data[c]['current_buy_count'] = 0
+                                    self.data[c]['current_sell_count'] = 0
+                                    self.data[c]['current_since'] = time.time() * 1000
+                                logger.info("Current accumulation cleared by user")
+                                self._save_snapshot() # Immediate persistence
                         elif data.get('method') == 'set_threshold':
                             coin = data.get('coin')
                             val = data.get('value')

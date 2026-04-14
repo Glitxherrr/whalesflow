@@ -49,7 +49,9 @@ class WhaleFlowDashboard {
         // Data view mode: 'Historical' or 'Current'
         this.dataViewMode = 'Historical';
         this.currentModeClearTime = 0;
+        this.currentSnapshotSavedAt = 0;
         this._loadModeFromStorage();
+        this._loadCurrentSnapshotFromStorage(); // Restore browser-owned Current snapshot immediately
 
         // Desktop notifications
         this.desktopNotificationsEnabled = false;
@@ -75,6 +77,7 @@ class WhaleFlowDashboard {
             if (!this.localWsActive) this.fetchFundingData();
         }, 30000);
         this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
+        this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
 
         // Absorption engine: snapshot every 30 seconds, evaluate every 30 seconds
         this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000); // 30s
@@ -207,6 +210,55 @@ class WhaleFlowDashboard {
         this.currentSellCount = d.currentSellCount || 0;
         this.pressureHistory = d.pressureHistory;
         this.lastPressureSnapshot = d.lastPressureSnapshot;
+    }
+
+
+    _saveCurrentSnapshotToStorage() {
+        try {
+            const dataToSave = {};
+            this.coinDataStore.forEach((d, coin) => {
+                dataToSave[coin] = {
+                    buyVol: d.currentBuyVolume || 0,
+                    sellVol: d.currentSellVolume || 0,
+                    buyCount: d.currentBuyCount || 0,
+                    sellCount: d.currentSellCount || 0,
+                    lastTime: d.lastTradeTime || this.currentModeClearTime,
+                    trades: Array.isArray(d.currentWhaleTrades) ? d.currentWhaleTrades.slice(0, 200) : []
+                };
+            });
+            this.currentSnapshotSavedAt = Date.now();
+            localStorage.setItem('whaleflow_curr_state', JSON.stringify({
+                savedAt: this.currentSnapshotSavedAt,
+                clearTime: this.currentModeClearTime,
+                coins: dataToSave
+            }));
+        } catch(e) {}
+    }
+
+    _loadCurrentSnapshotFromStorage() {
+        try {
+            const raw = localStorage.getItem('whaleflow_curr_state');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                const storedCoins = parsed && parsed.coins ? parsed.coins : parsed;
+                if (parsed && Number.isFinite(parsed.clearTime)) {
+                    this.currentModeClearTime = parsed.clearTime || 0;
+                }
+                this.currentSnapshotSavedAt = (parsed && parsed.savedAt) || 0;
+                this.coinList.forEach(coin => {
+                    const saved = storedCoins ? storedCoins[coin] : null;
+                    if (saved) {
+                        const d = this.getCoinData(coin);
+                        d.currentBuyVolume = saved.buyVol || 0;
+                        d.currentSellVolume = saved.sellVol || 0;
+                        d.currentBuyCount = saved.buyCount || 0;
+                        d.currentSellCount = saved.sellCount || 0;
+                        d.lastTradeTime = saved.lastTime || 0;
+                        d.currentWhaleTrades = Array.isArray(saved.trades) ? saved.trades.slice(0, 200) : [];
+                    }
+                });
+            }
+        } catch(e) {}
     }
 
 
@@ -402,35 +454,41 @@ class WhaleFlowDashboard {
 
         // Clear Data button (in mode bar, Current mode only)
         if (this.elements.clearDataBtn) {
-            this.elements.clearDataBtn.addEventListener('click', async () => {
+            this.elements.clearDataBtn.addEventListener('click', () => {
+                this.currentModeClearTime = Date.now();
+                this._saveModeToStorage();
+                
+                // Zero out accumulators for all coins natively in browser memory
+                this.coinDataStore.forEach(d => {
+                    d.currentBuyVolume = 0;
+                    d.currentSellVolume = 0;
+                    d.currentBuyCount = 0;
+                    d.currentSellCount = 0;
+                    d.currentWhaleTrades = [];
+                    d.lastTradeTime = this.currentModeClearTime;
+                });
+                this._saveCurrentSnapshotToStorage();
+                
+                this.loadCoinData(this.currentCoin);
+
+                this.updateSummaryCards();
+                this.renderTradesList();
+                this.updateAnalytics();
+
+                // Update hint
+                const hint = document.getElementById('tfBarHint');
+                if (hint) {
+                    hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
+                }
+
+                // Sync clear to Server (Python Backend)
                 if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
                     this.localWs.send(JSON.stringify({
                         method: 'clear_current'
                     }));
-                    this.showToast('Data cleared - tracking from now (Synced)');
-                    return;
                 }
 
-                const clearUrl = this.getBackendHttpUrl('/current/clear');
-                if (!clearUrl) {
-                    const msg = window.__STREAMLIT_MODE__
-                        ? 'Use the Streamlit "Clear Current Data" button above the dashboard'
-                        : 'Backend connection required to clear Current mode';
-                    this.showToast(msg, 'warn');
-                    return;
-                }
-
-                try {
-                    const resp = await fetch(clearUrl, { method: 'POST' });
-                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                    this.showToast('Data cleared - tracking from now (Synced)');
-                } catch (err) {
-                    console.error('Current clear failed:', err);
-                    const msg = window.__STREAMLIT_MODE__
-                        ? 'Use the Streamlit "Clear Current Data" button above the dashboard'
-                        : 'Backend connection required to clear Current mode';
-                    this.showToast(msg, 'warn');
-                }
+                this.showToast('Data cleared - tracking from now (Synced)');
             });
         }
 
@@ -1012,6 +1070,7 @@ class WhaleFlowDashboard {
                                 d.currentWhaleTrades = d.currentWhaleTrades.slice(0, 200);
                             }
                         }
+                        this._needsStorageSave = true;
                     }
                 } else {
                     d.totalSellVolume += value;
@@ -1031,12 +1090,22 @@ class WhaleFlowDashboard {
                                 d.currentWhaleTrades = d.currentWhaleTrades.slice(0, 200);
                             }
                         }
+                        this._needsStorageSave = true;
                     }
                 }
 
                 if (coin === this.currentCoin) {
                     currentCoinUpdated = true;
                 }
+
+        // Throttle saving current mode state to once per second
+        if (this._needsStorageSave && !this._saveTimeout) {
+            this._saveTimeout = setTimeout(() => {
+                this._saveCurrentSnapshotToStorage();
+                this._saveTimeout = null;
+                this._needsStorageSave = false;
+            }, 1000);
+        }
 
                 // --- Aggressive Initiative detection ---
                 const megaThresholds = { BTC: 2000000, ETH: 1000000, SOL: 500000, PAXG: 200000, XRP: 300000 };
@@ -2280,24 +2349,6 @@ class WhaleFlowDashboard {
     }
 
 
-    getBackendHttpUrl(pathname = '') {
-        try {
-            const urlParams = new URLSearchParams(window.location.search);
-            const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
-            if (serverConfig) {
-                const normalized = serverConfig
-                    .replace(/^ws:\/\//i, 'http://')
-                    .replace(/^wss:\/\//i, 'https://')
-                    .replace(/\/$/, '');
-                return `${normalized}${pathname}`;
-            }
-        } catch (e) { /* ignore */ }
-
-        if (window.location && /^https?:$/i.test(window.location.protocol)) {
-            return `${window.location.origin}${pathname}`;
-        }
-        return null;
-    }
 
     _applyInitialMode() {
         // Set the correct button active based on stored mode
@@ -2533,12 +2584,6 @@ class WhaleFlowDashboard {
                     sells: serverCoin.total_sell_vol
                 };
 
-                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
-                d.currentSellVolume = serverCoin.current_sell_vol || 0;
-                d.currentBuyCount = serverCoin.current_buy_count || 0;
-                d.currentSellCount = serverCoin.current_sell_count || 0;
-                d.currentWhaleTrades = Array.isArray(serverCoin.current_whale_trades) ? serverCoin.current_whale_trades.slice(0, 200) : [];
-                d.lastTradeTime = Math.max(d.lastTradeTime || 0, serverCoin.current_since || 0);
             }
 
             // Market Metrics - Immediate Hydration
@@ -2666,11 +2711,6 @@ class WhaleFlowDashboard {
                 }
             }
         });
-
-        const currentSinceValues = this.coinList
-            .map(coin => state.coins[coin] && state.coins[coin].current_since)
-            .filter(v => Number.isFinite(v) && v > 0);
-        this.currentModeClearTime = currentSinceValues.length > 0 ? Math.max(...currentSinceValues) : 0;
 
         // Load current coin's data into display copies
         this.loadCoinData(this.currentCoin);
