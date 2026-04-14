@@ -19,6 +19,8 @@ import sys
 from collections import deque
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 import uvicorn
 
 # ===== IN-MEMORY LOG HANDLER =====
@@ -29,7 +31,7 @@ class MemoryLogHandler(logging.Handler):
         self.buffer = deque(maxlen=capacity)
         self._broadcaster = None
     def set_broadcaster(self, fn):
-        """Set callback: fn(entry_dict) â€” called on every log emit."""
+        """Set callback: fn(entry_dict) — called on every log emit."""
         self._broadcaster = fn
     def emit(self, record):
         entry = {
@@ -69,7 +71,7 @@ CONFIG = {
     'coins': ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'],
     'whale_thresholds': {'BTC': 50000, 'ETH': 10000, 'SOL': 100, 'PAXG': 10, 'XRP': 50},
     'mega_thresholds': {'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000, 'PAXG': 200000, 'XRP': 300000},
-    'ws_port': 8765,
+    'ws_port': 7860,  # Default for Hugging Face is 7860
     'funding_poll_interval': 15,
     'signal_eval_interval': 15,
     'signal_initial_delay': 30,
@@ -103,6 +105,23 @@ CONFIG = {
     'abs_snapshots_maxlen': 320,
 }
 
+app = FastAPI()
+
+# Serve static files from root for cloud deployment compatibility
+@app.get("/")
+async def get_index():
+    return FileResponse("index.html")
+
+@app.get("/styles.css")
+async def get_styles():
+    return FileResponse("styles.css")
+
+@app.get("/app.js")
+async def get_app():
+    return FileResponse("app.js")
+
+# Mount static for everything else
+app.mount("/static", StaticFiles(directory="."), name="static")
 
 class HyperliquidCollector:
     """Singleton background collector."""
@@ -217,7 +236,7 @@ class HyperliquidCollector:
             'alert_label': 'Quiet',
             'regime': {
                 'score': 50,
-                'label': 'ANALYZING\u2026',
+                'label': 'ANALYZING…',
                 'css_class': '',
                 'last_change_time': 0,
                 'price_history': [],
@@ -254,7 +273,7 @@ class HyperliquidCollector:
         # Server runs in main thread or its own thread
         threading.Thread(target=self._run_local_server, daemon=True).start()
         
-        logger.info("âœ… WhaleFlow Collector System Started")
+        logger.info("✅ WhaleFlow Collector System Started")
         
         # Wire live log broadcasting through the local WS
         def _broadcast_log(entry):
@@ -1226,6 +1245,201 @@ class HyperliquidCollector:
                     d['pressure_history'].append({
                         'time': int(time.time() * 1000),
                         'buys': buy_d, 'sells': sell_d, 'net': buy_d - sell_d,
+                    'side': d['abs_side'],
+                    'detail': f"{'Sells' if d['abs_side'] == 'bullish' else 'Buys'} absorbed" if d['abs_detected'] else '',
+                }
+
+    # ==================== SIGNAL EVALUATOR (15s) ====================
+
+    def _run_signals(self):
+        time.sleep(CONFIG['signal_initial_delay'])
+        while self.running:
+            try:
+                self._evaluate_all_signals()
+            except Exception as e:
+                logger.error(f"Signal eval error: {e}")
+            time.sleep(CONFIG['signal_eval_interval'])
+
+    def _evaluate_all_signals(self):
+        now = time.time()
+        with self._data_lock:
+            for coin in self.coins:
+                d = self.data[coin]
+                sigs = d['signals']
+
+                s_abs = sigs['absorption']['active']
+                s_cvd = self._check_cvd_divergence(coin)
+                s_oi = self._check_oi_divergence(coin)
+                s_climax = self._check_volume_climax(coin)
+                s_fund = self._check_funding_extreme(coin)
+
+                s_init = False
+                if sigs['initiative']['time'] > 0:
+                    if now - sigs['initiative']['time'] < CONFIG['signal_decay_initiative']:
+                        s_init = True
+                    else:
+                        sigs['initiative'] = {'active': False, 'side': None, 'detail': '', 'time': 0}
+
+                s_clust = False
+                if sigs['clustering']['time'] > 0:
+                    if now - sigs['clustering']['time'] < CONFIG['signal_decay_clustering']:
+                        s_clust = True
+                    else:
+                        sigs['clustering'] = {'active': False, 'side': None, 'detail': '', 'time': 0}
+
+                active_count = sum([s_abs, bool(s_cvd), bool(s_oi), bool(s_climax), bool(s_fund)])
+                d['alert_level'] = min(active_count, 4)
+
+                if active_count == 0:
+                    d['alert_label'] = 'Quiet'
+                elif active_count == 1:
+                    d['alert_label'] = 'Watch'
+                elif active_count <= 3:
+                    d['alert_label'] = 'High Probability'
+                else:
+                    d['alert_label'] = 'Extreme Conviction'
+
+    def _check_cvd_divergence(self, coin):
+        d = self.data[coin]
+        snaps = list(d['abs_snapshots'])
+        if len(snaps) < 4:
+            return None
+
+        mid = len(snaps) // 2
+        s0, s1, s2, s3 = snaps[0], snaps[mid], snaps[mid], snaps[-1]
+        p1s, p1e = s0['price'], s1['price']
+        p2s, p2e = s2['price'], s3['price']
+        if p1s <= 0 or p2s <= 0:
+            return None
+
+        pd1 = ((p1e - p1s) / p1s) * 100
+        pd2 = ((p2e - p2s) / p2s) * 100
+        cvd1 = (s1['cum_buy'] - s0['cum_buy']) - (s1['cum_sell'] - s0['cum_sell'])
+        cvd2 = (s3['cum_buy'] - s2['cum_buy']) - (s3['cum_sell'] - s2['cum_sell'])
+
+        pt = CONFIG['cvd_price_threshold']
+        cr = CONFIG['cvd_ratio']
+        result = None
+        if pd1 > pt and pd2 >= 0 and cvd1 > 0 and cvd2 < cvd1 * cr:
+            result = 'bearish'
+            d['signals']['cvd_divergence'] = {
+                'active': True, 'side': 'bearish',
+                'detail': f"CVD fading: {cvd1/1e6:.1f}M -> {cvd2/1e6:.1f}M while price still up",
+            }
+        elif pd1 < -pt and pd2 <= 0 and cvd1 < 0 and abs(cvd2) < abs(cvd1) * cr:
+            result = 'bullish'
+            d['signals']['cvd_divergence'] = {
+                'active': True, 'side': 'bullish',
+                'detail': f"Sell pressure fading: {cvd1/1e6:.1f}M -> {cvd2/1e6:.1f}M while price still down",
+            }
+        else:
+            d['signals']['cvd_divergence'] = {'active': False, 'side': None, 'detail': ''}
+        return result
+
+    def _check_oi_divergence(self, coin):
+        d = self.data[coin]
+        snaps = list(d['abs_snapshots'])
+        if len(snaps) < 3:
+            return None
+
+        oldest, newest = snaps[0], snaps[-1]
+        price_start = oldest['price']
+        price_now = newest['price']
+        oi_start = oldest['oi']
+        oi_now = newest['oi']
+        if price_start <= 0 or oi_start <= 0:
+            return None
+
+        price_delta = ((price_now - price_start) / price_start) * 100
+        oi_delta = ((oi_now - oi_start) / oi_start) * 100
+        t = CONFIG['oi_divergence_threshold']
+
+        result = None
+        if price_delta > t and oi_delta < -t:
+            result = 'bearish'
+            d['signals']['oi_divergence'] = {
+                'active': True, 'side': 'bearish',
+                'detail': f"Price +{price_delta:.2f}% but OI {oi_delta:.2f}% (distribution)",
+            }
+        elif price_delta < -t and oi_delta < -t:
+            result = 'bullish'
+            d['signals']['oi_divergence'] = {
+                'active': True, 'side': 'bullish',
+                'detail': f"Price {price_delta:.2f}% and OI {oi_delta:.2f}% (capitulation ending)",
+            }
+        else:
+            d['signals']['oi_divergence'] = {'active': False, 'side': None, 'detail': ''}
+        return result
+
+    def _check_volume_climax(self, coin):
+        d = self.data[coin]
+        buckets = list(d['volume_buckets'])
+        if len(buckets) < 3:
+            return None
+
+        avg = sum(b['total'] for b in buckets) / len(buckets)
+        current = d['current_bucket_buy'] + d['current_bucket_sell']
+        if avg <= 0:
+            return None
+        ratio = current / avg
+
+        result = None
+        if ratio >= CONFIG['volume_climax_ratio']:
+            buy_pct = d['current_bucket_buy'] / current if current > 0 else 0.5
+            if buy_pct > CONFIG['volume_climax_buy_high']:
+                result = 'bearish'
+                d['signals']['volume_climax'] = {
+                    'active': True, 'side': 'bearish',
+                    'detail': f"Buy volume {ratio:.1f}x avg â€” possible blow-off top",
+                }
+            elif buy_pct < CONFIG['volume_climax_buy_low']:
+                result = 'bullish'
+                d['signals']['volume_climax'] = {
+                    'active': True, 'side': 'bullish',
+                    'detail': f"Sell volume {ratio:.1f}x avg â€” possible capitulation bottom",
+                }
+            else:
+                d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
+        else:
+            d['signals']['volume_climax'] = {'active': False, 'side': None, 'detail': ''}
+        return result
+
+    def _check_funding_extreme(self, coin):
+        d = self.data[coin]
+        funding = d['funding']
+        rate_pct = funding * 100
+        t = CONFIG['funding_extreme_threshold']
+
+        result = None
+        if rate_pct > t:
+            result = 'bearish'
+            d['signals']['funding_extreme'] = {
+                'active': True, 'side': 'bearish',
+                'detail': f"Funding +{rate_pct:.4f}% â€” longs overleveraged",
+            }
+        elif rate_pct < -t:
+            result = 'bullish'
+            d['signals']['funding_extreme'] = {
+                'active': True, 'side': 'bullish',
+                'detail': f"Funding {rate_pct:.4f}% â€” shorts overleveraged",
+            }
+        else:
+            d['signals']['funding_extreme'] = {'active': False, 'side': None, 'detail': ''}
+        return result
+
+    # ==================== PRESSURE SNAPSHOTS ====================
+
+    def _run_pressure(self):
+        while self.running:
+            time.sleep(CONFIG['pressure_interval'])
+            with self._data_lock:
+                for coin in self.coins:
+                    d = self.data[coin]
+                    buy_d = d['total_buy_vol'] - d['last_pressure_snap']['buys']
+                    sell_d = d['total_sell_vol'] - d['last_pressure_snap']['sells']
+                    d['pressure_history'].append({
+                        'time': int(time.time() * 1000),
+                        'buys': buy_d, 'sells': sell_d, 'net': buy_d - sell_d,
                     })
                     d['last_pressure_snap'] = {'buys': d['total_buy_vol'], 'sells': d['total_sell_vol']}
 
@@ -1289,13 +1503,13 @@ class HyperliquidCollector:
                 }
             return state
 
-    # ==================== CLOUD READY SERVER ====================
+    def _get_full_state_snapshot(self):
+        return self.get_state()
 
     def _run_local_server(self):
         """Runs the FastAPI server for WebSockets and Health Checks"""
-        app = FastAPI(title="WhaleFlow API")
+        global app
 
-        @app.get("/")
         @app.get("/health")
         async def health():
             return {"status": "ok", "uptime": time.time() - self.started_at}
@@ -1306,6 +1520,14 @@ class HyperliquidCollector:
             self.local_clients.add(websocket)
             logger.info("New dashboard client connected via FastAPI WS")
             try:
+                # 1. Immediate Hydration: Send full state on connect
+                with self._data_lock:
+                    snapshot = self._get_full_state_snapshot()
+                    await websocket.send_text(json.dumps({
+                        'channel': 'full_state',
+                        'data': snapshot
+                    }))
+
                 while True:
                     message = await websocket.receive_text()
                     try:
@@ -1336,12 +1558,9 @@ class HyperliquidCollector:
             finally:
                 self.local_clients.discard(websocket)
 
-        # Broadcast helper for the rest of the app
-        self._fastapi_app = app
-        
-        # Determine port (Cloud providers like Koyeb/Render inject PORT env var)
+        # Determine port
         port = int(os.environ.get("PORT", CONFIG['ws_port']))
-        host = "0.0.0.0" # Bind to all interfaces for cloud
+        host = "0.0.0.0"
         
         logger.info(f"🚀 Launching Cloud-Ready server on {host}:{port}")
         uvicorn.run(app, host=host, port=port, log_level="warning")
@@ -1351,15 +1570,20 @@ class HyperliquidCollector:
             return
         
         # We need to handle this because broadcast is called from threads
-        # but self.local_clients are FastAPI WebSocket objects
         stale = []
         for client in list(self.local_clients):
             try:
-                # FastAPI WebSocket.send_text is async, and we are in a sync thread or async loop
-                # If we are in the collector thread, we use a future
                 asyncio.run_coroutine_threadsafe(client.send_text(msg_str), self.local_loop)
             except Exception:
                 stale.append(client)
         
         for s in stale:
             self.local_clients.discard(s)
+
+if __name__ == "__main__":
+    collector = HyperliquidCollector.get_instance()
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        collector.shutdown()

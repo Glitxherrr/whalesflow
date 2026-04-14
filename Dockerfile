@@ -14,8 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Expose port (Cloud providers will provide this via PORT env var)
-EXPOSE 8080
+# Expose port (Hugging Face default is 7860)
+EXPOSE 7860
+
+# Ensure runtime directory exists
+RUN mkdir -p runtime logs && chmod 777 runtime logs
 
 # Run the collector
 CMD ["python", "collector.py"]
