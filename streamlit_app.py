@@ -69,7 +69,7 @@ window.__SERVER_STATE__ = {json.dumps(server_state)};
 
 # Render the full dashboard with auto-polling capability
 # We use st.fragment with run_every to simulate real-time updates on Streamlit Cloud
-@st.fragment(run_every="10s")
+@st.fragment(run_every="30s")
 def render_dashboard():
     # Re-fetch state for the poller
     latest_state = collector.get_state()

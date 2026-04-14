@@ -25,11 +25,11 @@ class WhaleFlowDashboard {
         this.reconnectDelay = 2000;
         this.isConnected = false;
 
-        // Load active coin from memory to persist across Streamlit refreshes
-        this._loadCoinFromStorage();
-
         // Supported coins (reduced set)
         this.coinList = ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'];
+
+        // Load active coin from memory to persist across Streamlit refreshes
+        this._loadCoinFromStorage();
 
         // Per-coin persistent data store — data collects continuously for ALL coins
         this.coinDataStore = new Map();
@@ -73,15 +73,15 @@ class WhaleFlowDashboard {
         // Periodic updates
         this.fundingInterval = setInterval(() => {
             if (!this.localWsActive) this.fetchFundingData();
-        }, 15000);
+        }, 30000);
         this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
 
-        // Absorption engine: snapshot every 15 seconds, evaluate every 15 seconds
-        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 15000); // 15s
-        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 15000); // 15s
+        // Absorption engine: snapshot every 30 seconds, evaluate every 30 seconds
+        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000); // 30s
+        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000); // 30s
 
-        // Reversal Radar: evaluate all signals every 15 seconds
-        this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 15000);
+        // Reversal Radar: evaluate all signals every 30 seconds
+        this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
 
         // System panel state
         this._serverSystemState = {
@@ -890,6 +890,10 @@ class WhaleFlowDashboard {
             case 'funding':
                 this.handleFundingUpdate(msg.data);
                 break;
+            case 'full_state':
+                console.log('🔄 Received full state update from backend');
+                this.loadServerState(msg.data);
+                break;
             case 'log':
                 const clearedAt = parseInt(localStorage.getItem('whaleflow_logs_cleared_at') || '0', 10);
                 const logTimeMs = msg.data.timestamp ? msg.data.timestamp * 1000 : 0;
@@ -970,8 +974,8 @@ class WhaleFlowDashboard {
                     exchange: trade.exchange || 'HL'
                 });
 
-                if (d.whaleTrades.length > 500) {
-                    d.whaleTrades = d.whaleTrades.slice(0, 500);
+                if (d.whaleTrades.length > 2000) {
+                    d.whaleTrades = d.whaleTrades.slice(0, 2000);
                 }
 
                 if (isBuy) {
@@ -1022,7 +1026,7 @@ class WhaleFlowDashboard {
                         price, size, value, coin, mega_type: 'initiative',
                         exchange: trade.exchange || 'HL'
                     });
-                    if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
+                    if (d.megaWhales.length > 500) d.megaWhales = d.megaWhales.slice(0, 500);
                     if (coin === this.currentCoin) {
                         if (!this._renderMegaPending) {
                             this._renderMegaPending = true;
@@ -1058,7 +1062,7 @@ class WhaleFlowDashboard {
                             cluster_count: sameSide.length,
                             exchange: trade.exchange || 'HL'
                         });
-                        if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
+                        if (d.megaWhales.length > 500) d.megaWhales = d.megaWhales.slice(0, 500);
                         if (coin === this.currentCoin) {
                             if (!this._renderMegaPending) {
                                 this._renderMegaPending = true;
@@ -2457,8 +2461,8 @@ class WhaleFlowDashboard {
 
             // Whale trades — backend uses appendleft so index 0 = newest
             if (serverCoin.whale_trades && serverCoin.whale_trades.length > 0) {
-                // Keep up to 500 trades to ensure Current mode can reconstruct its volume
-                d.whaleTrades = serverCoin.whale_trades.slice(0, 500);
+                // Keep up to 2000 trades to ensure Current mode can reconstruct its volume
+                d.whaleTrades = serverCoin.whale_trades.slice(0, 2000);
                 d.totalBuyVolume = serverCoin.total_buy_vol;
                 d.totalSellVolume = serverCoin.total_sell_vol;
                 d.buyCount = serverCoin.buy_count;
@@ -2565,7 +2569,7 @@ class WhaleFlowDashboard {
 
             // Mega whales — backend uses appendleft so index 0 = newest
             if (serverCoin.mega_whales && serverCoin.mega_whales.length > 0) {
-                d.megaWhales = serverCoin.mega_whales.slice(0, 100);
+                d.megaWhales = serverCoin.mega_whales.slice(0, 500);
             }
 
             // Reversal Radar signals — convert signal times from backend seconds → ms

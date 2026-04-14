@@ -72,10 +72,10 @@ CONFIG = {
     'whale_thresholds': {'BTC': 5, 'ETH': 5, 'SOL': 5, 'PAXG': 5, 'XRP': 5},
     'mega_thresholds': {'BTC': 2000000, 'ETH': 1000000, 'SOL': 500000, 'PAXG': 200000, 'XRP': 300000},
     'ws_port': 7860,  # Default for Hugging Face is 7860
-    'funding_poll_interval': 15,
-    'signal_eval_interval': 15,
+    'funding_poll_interval': 30,
+    'signal_eval_interval': 30,
     'signal_initial_delay': 30,
-    'snapshot_interval': 15,
+    'snapshot_interval': 30,
     'snapshot_initial_delay': 15,
     'pressure_interval': 30,
     'signal_decay_initiative': 300,
@@ -100,9 +100,11 @@ CONFIG = {
     'max_trade_value': 100_000_000_000_000,
     'trade_time_tolerance_ms': 300_000,
     'dedupe_cache_size': 2000,
-    'funding_history_maxlen': 6000,
-    'market_history_maxlen': 6000,
-    'abs_snapshots_maxlen': 320,
+    'funding_history_maxlen': 5000,
+    'market_history_maxlen': 5000,
+    'abs_snapshots_maxlen': 2880,
+    'pressure_history_maxlen': 2880,
+    'volume_buckets_maxlen': 2880,
 }
 
 app = FastAPI()
@@ -191,7 +193,7 @@ class HyperliquidCollector:
 
     def _new_coin_data(self):
         return {
-            'whale_trades': deque(maxlen=500),
+            'whale_trades': deque(maxlen=2000),
             'total_buy_vol': 0.0,
             'total_sell_vol': 0.0,
             'buy_count': 0,
@@ -201,7 +203,7 @@ class HyperliquidCollector:
             'current_buy_count': 0,
             'current_sell_count': 0,
             'whale_buckets': deque(maxlen=1440),
-            'mega_whales': deque(maxlen=100),
+            'mega_whales': deque(maxlen=500),
             'abs_cum_buy': 0.0,
             'abs_cum_sell': 0.0,
             'abs_snapshots': deque(maxlen=CONFIG['abs_snapshots_maxlen']),
@@ -218,9 +220,9 @@ class HyperliquidCollector:
             'oracle_px': 0.0,
             'open_interest': 0.0,
             'day_volume': 0.0,
-            'pressure_history': deque(maxlen=30),
+            'pressure_history': deque(maxlen=CONFIG['pressure_history_maxlen']),
             'last_pressure_snap': {'buys': 0.0, 'sells': 0.0},
-            'volume_buckets': deque(maxlen=12),
+            'volume_buckets': deque(maxlen=CONFIG['volume_buckets_maxlen']),
             'current_bucket_buy': 0.0,
             'current_bucket_sell': 0.0,
             'signals': {
@@ -349,15 +351,15 @@ class HyperliquidCollector:
                             d[key] = sc[key]
 
                     if sc.get('whale_trades'):
-                        d['whale_trades'] = deque(sc['whale_trades'][:500], maxlen=500)
+                        d['whale_trades'] = deque(sc['whale_trades'][:2000], maxlen=2000)
                     if sc.get('mega_whales'):
-                        d['mega_whales'] = deque(sc['mega_whales'][:100], maxlen=100)
+                        d['mega_whales'] = deque(sc['mega_whales'][:500], maxlen=500)
                     if sc.get('whale_buckets'):
                         d['whale_buckets'] = deque(sc['whale_buckets'][-1440:], maxlen=1440)
                     if sc.get('pressure_history'):
-                        d['pressure_history'] = deque(sc['pressure_history'][-30:], maxlen=30)
+                        d['pressure_history'] = deque(sc['pressure_history'][-CONFIG['pressure_history_maxlen']:], maxlen=CONFIG['pressure_history_maxlen'])
                     if sc.get('volume_buckets'):
-                        d['volume_buckets'] = deque(sc['volume_buckets'][-12:], maxlen=12)
+                        d['volume_buckets'] = deque(sc['volume_buckets'][-CONFIG['volume_buckets_maxlen']:], maxlen=CONFIG['volume_buckets_maxlen'])
                     if sc.get('funding_history'):
                         d['funding_history'] = deque(
                             sc['funding_history'][-CONFIG['funding_history_maxlen']:],
@@ -1054,7 +1056,7 @@ class HyperliquidCollector:
                     'detail': f"{'Sells' if d['abs_side'] == 'bullish' else 'Buys'} absorbed" if d['abs_detected'] else '',
                 }
 
-    # ==================== SIGNAL EVALUATOR (15s) ====================
+    # ==================== SIGNAL EVALUATOR (30s) ====================
 
     def _run_signals(self):
         time.sleep(CONFIG['signal_initial_delay'])
@@ -1269,7 +1271,7 @@ class HyperliquidCollector:
             for coin in self.coins:
                 d = self.data[coin]
                 state['coins'][coin] = {
-                    'whale_trades': list(d['whale_trades']),
+                    'whale_trades': list(d['whale_trades'])[:2000],
                     'mega_whales': list(d['mega_whales']),
                     'total_buy_vol': d['total_buy_vol'],
                     'total_sell_vol': d['total_sell_vol'],
@@ -1376,11 +1378,10 @@ class HyperliquidCollector:
         if not self.local_clients:
             return
         
-        # We need to handle this because broadcast is called from threads
         stale = []
         for client in list(self.local_clients):
             try:
-                asyncio.run_coroutine_threadsafe(client.send_text(msg_str), self.local_loop)
+                await client.send_text(msg_str)
             except Exception:
                 stale.append(client)
         
