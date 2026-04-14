@@ -1885,6 +1885,29 @@ class HyperliquidCollector:
         async def health():
             return {"status": "ok", "uptime": time.time() - self.started_at}
 
+        @app.post("/current/clear")
+        async def clear_current():
+            with self._data_lock:
+                for c in self.coins:
+                    self.data[c]['current_buy_vol'] = 0.0
+                    self.data[c]['current_sell_vol'] = 0.0
+                    self.data[c]['current_buy_count'] = 0
+                    self.data[c]['current_sell_count'] = 0
+                    self.data[c]['current_whale_trades'].clear()
+                    self.data[c]['current_since'] = time.time() * 1000
+                logger.info("Current accumulation cleared by user")
+                self._save_snapshot()
+                snapshot = self._get_full_state_snapshot()
+            if self.local_loop and self.local_clients:
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_local(json.dumps({
+                        'channel': 'full_state',
+                        'data': snapshot
+                    })),
+                    self.local_loop
+                )
+            return {"ok": True, "current_since": snapshot['coins'][self.coins[0]].get('current_since', 0)}
+
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket):
             await websocket.accept()

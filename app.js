@@ -402,13 +402,27 @@ class WhaleFlowDashboard {
 
         // Clear Data button (in mode bar, Current mode only)
         if (this.elements.clearDataBtn) {
-            this.elements.clearDataBtn.addEventListener('click', () => {
+            this.elements.clearDataBtn.addEventListener('click', async () => {
                 if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
                     this.localWs.send(JSON.stringify({
                         method: 'clear_current'
                     }));
                     this.showToast('Data cleared - tracking from now (Synced)');
-                } else {
+                    return;
+                }
+
+                const clearUrl = this.getBackendHttpUrl('/current/clear');
+                if (!clearUrl) {
+                    this.showToast('Backend connection required to clear Current mode', 'warn');
+                    return;
+                }
+
+                try {
+                    const resp = await fetch(clearUrl, { method: 'POST' });
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    this.showToast('Data cleared - tracking from now (Synced)');
+                } catch (err) {
+                    console.error('Current clear failed:', err);
                     this.showToast('Backend connection required to clear Current mode', 'warn');
                 }
             });
@@ -2257,6 +2271,26 @@ class WhaleFlowDashboard {
         try {
             localStorage.setItem('whaleflow_dataViewMode', this.dataViewMode);
         } catch (e) { /* localStorage not available */ }
+    }
+
+
+    getBackendHttpUrl(pathname = '') {
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
+            if (serverConfig) {
+                const normalized = serverConfig
+                    .replace(/^ws:\/\//i, 'http://')
+                    .replace(/^wss:\/\//i, 'https://')
+                    .replace(/\/$/, '');
+                return `${normalized}${pathname}`;
+            }
+        } catch (e) { /* ignore */ }
+
+        if (window.location && /^https?:$/i.test(window.location.protocol)) {
+            return `${window.location.origin}${pathname}`;
+        }
+        return null;
     }
 
     _applyInitialMode() {
