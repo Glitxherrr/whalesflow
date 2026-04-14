@@ -192,11 +192,11 @@ async def get_index():
 
 @app.get("/styles.css")
 async def get_styles():
-    return FileResponse("styles.css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse("styles.css", media_type="text/css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/app.js")
 async def get_app():
-    return FileResponse("app.js", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse("app.js", media_type="application/javascript", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # Mount static for everything else
 app.mount("/static", StaticFiles(directory="."), name="static")
