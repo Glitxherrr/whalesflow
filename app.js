@@ -413,7 +413,10 @@ class WhaleFlowDashboard {
 
                 const clearUrl = this.getBackendHttpUrl('/current/clear');
                 if (!clearUrl) {
-                    this.showToast('Backend connection required to clear Current mode', 'warn');
+                    const msg = window.__STREAMLIT_MODE__
+                        ? 'Use the Streamlit "Clear Current Data" button above the dashboard'
+                        : 'Backend connection required to clear Current mode';
+                    this.showToast(msg, 'warn');
                     return;
                 }
 
@@ -423,7 +426,10 @@ class WhaleFlowDashboard {
                     this.showToast('Data cleared - tracking from now (Synced)');
                 } catch (err) {
                     console.error('Current clear failed:', err);
-                    this.showToast('Backend connection required to clear Current mode', 'warn');
+                    const msg = window.__STREAMLIT_MODE__
+                        ? 'Use the Streamlit "Clear Current Data" button above the dashboard'
+                        : 'Backend connection required to clear Current mode';
+                    this.showToast(msg, 'warn');
                 }
             });
         }

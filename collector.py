@@ -1877,6 +1877,28 @@ class HyperliquidCollector:
     def _get_full_state_snapshot(self):
         return self.get_state()
 
+    def clear_current_state(self):
+        with self._data_lock:
+            for c in self.coins:
+                self.data[c]['current_buy_vol'] = 0.0
+                self.data[c]['current_sell_vol'] = 0.0
+                self.data[c]['current_buy_count'] = 0
+                self.data[c]['current_sell_count'] = 0
+                self.data[c]['current_whale_trades'].clear()
+                self.data[c]['current_since'] = time.time() * 1000
+            logger.info("Current accumulation cleared by user")
+            self._save_snapshot()
+            snapshot = self._get_full_state_snapshot()
+        if self.local_loop and self.local_clients:
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_local(json.dumps({
+                    'channel': 'full_state',
+                    'data': snapshot
+                })),
+                self.local_loop
+            )
+        return snapshot
+
     def _run_local_server(self):
         """Runs the FastAPI server for WebSockets and Health Checks"""
         global app
@@ -1887,25 +1909,7 @@ class HyperliquidCollector:
 
         @app.post("/current/clear")
         async def clear_current():
-            with self._data_lock:
-                for c in self.coins:
-                    self.data[c]['current_buy_vol'] = 0.0
-                    self.data[c]['current_sell_vol'] = 0.0
-                    self.data[c]['current_buy_count'] = 0
-                    self.data[c]['current_sell_count'] = 0
-                    self.data[c]['current_whale_trades'].clear()
-                    self.data[c]['current_since'] = time.time() * 1000
-                logger.info("Current accumulation cleared by user")
-                self._save_snapshot()
-                snapshot = self._get_full_state_snapshot()
-            if self.local_loop and self.local_clients:
-                asyncio.run_coroutine_threadsafe(
-                    self._broadcast_local(json.dumps({
-                        'channel': 'full_state',
-                        'data': snapshot
-                    })),
-                    self.local_loop
-                )
+            snapshot = self.clear_current_state()
             return {"ok": True, "current_since": snapshot['coins'][self.coins[0]].get('current_since', 0)}
 
         @app.websocket("/ws")
@@ -1954,21 +1958,7 @@ class HyperliquidCollector:
                         if data.get('method') == 'ping':
                             await websocket.send_text(json.dumps({'channel': 'pong'}))
                         elif data.get('method') == 'clear_current':
-                            with self._data_lock:
-                                for c in self.coins:
-                                    self.data[c]['current_buy_vol'] = 0.0
-                                    self.data[c]['current_sell_vol'] = 0.0
-                                    self.data[c]['current_buy_count'] = 0
-                                    self.data[c]['current_sell_count'] = 0
-                                    self.data[c]['current_whale_trades'].clear()
-                                    self.data[c]['current_since'] = time.time() * 1000
-                                logger.info("Current accumulation cleared by user")
-                                self._save_snapshot() # Immediate persistence
-                                snapshot = self._get_full_state_snapshot()
-                            await self._broadcast_local(json.dumps({
-                                'channel': 'full_state',
-                                'data': snapshot
-                            }))
+                            self.clear_current_state()
                         elif data.get('method') == 'set_threshold':
                             coin = data.get('coin')
                             val = data.get('value')
