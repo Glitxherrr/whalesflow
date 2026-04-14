@@ -18,6 +18,8 @@ import os
 import sys
 from collections import deque
 from datetime import datetime
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import uvicorn
 
 # ===== IN-MEMORY LOG HANDLER =====
 class MemoryLogHandler(logging.Handler):
@@ -229,47 +231,31 @@ class HyperliquidCollector:
     # ==================== LIFECYCLE ====================
 
     def start(self):
-        if self.running:
-            return
         self.running = True
-        if self.started_at is None:
-            self.started_at = time.time()
-
-        # Graceful shutdown handlers (signal only works from main thread)
-        try:
-            _signal.signal(_signal.SIGINT, lambda s, f: self.shutdown())
-            _signal.signal(_signal.SIGTERM, lambda s, f: self.shutdown())
-        except (ValueError, OSError, AttributeError):
-            pass  # Running in Streamlit worker thread â€” atexit still works
-        atexit.register(self.shutdown)
-
-        threading.Thread(target=self._run_ws, daemon=True, name='ws').start()
-        threading.Thread(target=self._run_ws_binance_spot, daemon=True, name='bin_spot').start()
-        threading.Thread(target=self._run_ws_binance_futures, daemon=True, name='bin_fut').start()
-        threading.Thread(target=self._run_ws_bybit_linear, daemon=True, name='byb_perp').start()
-        threading.Thread(target=self._run_ws_bybit_spot, daemon=True, name='byb_spot').start()
-        threading.Thread(target=self._run_ws_okx, daemon=True, name='okx').start()
-        threading.Thread(target=self._run_ws_kraken_spot, daemon=True, name='krk_spot').start()
-        threading.Thread(target=self._run_ws_kraken_futures, daemon=True, name='krk_fut').start()
-        threading.Thread(target=self._run_ws_coinbase, daemon=True, name='cb').start()
+        self.started_at = time.time()
+        self.local_loop = asyncio.new_event_loop() # Create loop for broadcasting
         
-        # New aggressive expansion exchanges
-        threading.Thread(target=self._run_ws_deribit, daemon=True, name='drb').start()
-        threading.Thread(target=self._run_ws_bitfinex, daemon=True, name='bfx').start()
-        threading.Thread(target=self._run_ws_bitget, daemon=True, name='bgt').start()
-        threading.Thread(target=self._run_ws_bitget_futures, daemon=True, name='bgt_fut').start()
-        threading.Thread(target=self._run_ws_mexc, daemon=True, name='mexc').start()
-        threading.Thread(target=self._run_ws_mexc_futures, daemon=True, name='mexc_fut').start()
-        threading.Thread(target=self._run_ws_upbit, daemon=True, name='upb').start()
-        threading.Thread(target=self._run_ws_gate, daemon=True, name='gate').start()
-        threading.Thread(target=self._run_ws_gate_futures, daemon=True, name='gate_fut').start()
-
-        threading.Thread(target=self._run_funding, daemon=True, name='funding').start()
-        threading.Thread(target=self._run_snapshots, daemon=True, name='snapshots').start()
-        threading.Thread(target=self._run_signals, daemon=True, name='signals').start()
-        threading.Thread(target=self._run_pressure, daemon=True, name='pressure').start()
-        threading.Thread(target=self._run_local_server, daemon=True, name='local_ws').start()
-
+        def run_loop():
+            asyncio.set_event_loop(self.local_loop)
+            self.local_loop.run_forever()
+            
+        threading.Thread(target=run_loop, daemon=True).start()
+        
+        # Rest of the threads
+        threading.Thread(target=self._run_ws, daemon=True).start()
+        threading.Thread(target=self._run_ws_coinbase, daemon=True).start()
+        threading.Thread(target=self._run_ws_bitget, daemon=True).start()
+        threading.Thread(target=self._run_ws_bitfinex, daemon=True).start()
+        threading.Thread(target=self._run_funding, daemon=True).start()
+        threading.Thread(target=self._run_signals, daemon=True).start()
+        threading.Thread(target=self._run_snapshots, daemon=True).start()
+        threading.Thread(target=self._run_pressure, daemon=True).start()
+        
+        # Server runs in main thread or its own thread
+        threading.Thread(target=self._run_local_server, daemon=True).start()
+        
+        logger.info("âœ… WhaleFlow Collector System Started")
+        
         # Wire live log broadcasting through the local WS
         def _broadcast_log(entry):
             if self.local_loop and self.local_clients:
@@ -278,8 +264,6 @@ class HyperliquidCollector:
                     self._broadcast_local(msg), self.local_loop
                 )
         _mh.set_broadcaster(_broadcast_log)
-
-        logger.info(f"Collector started at {datetime.now().isoformat()}")
 
     def shutdown(self):
         if not self.running:
@@ -436,264 +420,6 @@ class HyperliquidCollector:
                 except Exception:
                     logger.warning("WS HL parse error", exc_info=True)
 
-    # ==================== WEBSOCKET - Binance ====================
-
-    def _run_ws_binance_spot(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_binance_spot())
-            except Exception as e:
-                err = str(e)
-                if "451" in err:
-                    logger.warning("Binance Spot geo-blocked on this host.")
-                    break
-                logger.error(f"WS Binance Spot error: {e}")
-                time.sleep(5)
-
-    async def _ws_loop_binance_spot(self):
-        streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
-        url = f"wss://stream.binance.us:9443/stream?streams={streams}"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['BIN']['connected'] = True
-            logger.info("WS Binance.US Spot connected")
-            async for raw in ws:
-                try:
-                    data = json.loads(raw)['data']
-                    self._process_trades([{
-                        'coin': data['s'].replace('USDT', ''),
-                        'px': float(data['p']), 'sz': float(data['q']),
-                        'side': 'B' if not data['m'] else 'S',
-                        'time': int(data['E']), 'exchange': 'BIN_SPOT'
-                    }])
-                    self.exchange_status['BIN']['last_msg'] = time.time()
-                except Exception: pass
-
-    def _run_ws_binance_futures(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_binance_futures())
-            except Exception as e:
-                err = str(e)
-                if "451" in err:
-                    logger.warning("Binance Futures geo-blocked on this host.")
-                    break
-                logger.error(f"WS Binance Futures error: {e}")
-                time.sleep(5)
-
-    async def _ws_loop_binance_futures(self):
-        streams = "/".join([f"{coin.lower()}usdt@aggTrade" for coin in self.coins])
-        url = f"wss://fstream.binance.com/stream?streams={streams}"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['BIN']['connected'] = True
-            logger.info("WS Binance Futures connected")
-            async for raw in ws:
-                try:
-                    data = json.loads(raw)['data']
-                    self._process_trades([{
-                        'coin': data['s'].replace('USDT', ''),
-                        'px': float(data['p']), 'sz': float(data['q']),
-                        'side': 'B' if not data['m'] else 'S',
-                        'time': int(data['E']), 'exchange': 'BIN_FUT'
-                    }])
-                    self.exchange_status['BIN']['last_msg'] = time.time()
-                except Exception: pass
-
-    # ==================== WEBSOCKET - Bybit ====================
-
-    def _run_ws_bybit_linear(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_bybit_linear())
-            except Exception as e:
-                logger.error(f"WS Bybit Linear error: {e}")
-                self.exchange_status['BYB']['connected'] = False
-                time.sleep(5)
-
-    async def _ws_loop_bybit_linear(self):
-        url = "wss://stream.bybit.com/v5/public/linear"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['BYB']['connected'] = True
-            logger.info("WS Bybit Linear connected")
-            args = [f"publicTrade.{coin}USDT" for coin in self.coins]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if 'data' in msg and isinstance(msg['data'], list):
-                        parsed_trades = []
-                        for t in msg['data']:
-                            coin = msg['topic'].split('.')[1].replace('USDT', '')
-                            if coin in self.coins:
-                                parsed_trades.append({
-                                    'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
-                                    'side': 'B' if t['S'] == 'Buy' else 'S',
-                                    'time': int(t['T']), 'exchange': 'BYB'
-                                })
-                        if parsed_trades:
-                            self._process_trades(parsed_trades)
-                            self.exchange_status['BYB']['last_msg'] = time.time()
-                except Exception:
-                    logger.warning("WS Bybit parse error", exc_info=True)
-
-    def _run_ws_bybit_spot(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_bybit_spot())
-            except Exception as e:
-                logger.error(f"WS Bybit Spot error: {e}")
-                self.exchange_status['BYB']['connected'] = False
-                time.sleep(5)
-
-    async def _ws_loop_bybit_spot(self):
-        url = "wss://stream.bybit.com/v5/public/spot"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            logger.info("WS Bybit Spot connected")
-            args = [f"publicTrade.{coin}USDT" for coin in self.coins]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if 'data' in msg and isinstance(msg['data'], list):
-                        for t in msg['data']:
-                            coin = msg['topic'].split('.')[1].replace('USDT', '')
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
-                                'side': 'B' if t['S'] == 'Buy' else 'S',
-                                'time': int(t['T']), 'exchange': 'BYB_SPOT'
-                            }])
-                            self.exchange_status['BYB']['last_msg'] = time.time()
-                except Exception: pass
-
-    # ==================== WEBSOCKET - OKX ====================
-
-    def _run_ws_okx(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_okx())
-            except Exception as e:
-                logger.error(f"WS OKX connection error: {e}")
-                self.exchange_status['OKX']['connected'] = False
-                self.exchange_status['OKX']['last_error'] = str(e)
-                time.sleep(5)
-
-    async def _ws_loop_okx(self):
-        url = "wss://ws.okx.com:8443/ws/v5/public"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['OKX']['connected'] = True
-            logger.info("WS OKX connected")
-            # Subscribe to both SWAP (Perps) and Spot
-            args = []
-            for coin in self.coins:
-                args.append({"channel": "trades", "instId": f"{coin}-USDT-SWAP"})
-                args.append({"channel": "trades", "instId": f"{coin}-USDT"})
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('arg', {}).get('channel') == 'trades' and 'data' in msg:
-                        parsed_trades = []
-                        for t in msg['data']:
-                            coin = t['instId'].split('-')[0]
-                            if coin in self.coins:
-                                parsed_trades.append({
-                                    'coin': coin, 'px': float(t['px']), 'sz': float(t['sz']),
-                                    'side': 'B' if t['side'] == 'buy' else 'S',
-                                    'time': int(t['ts']), 'exchange': 'OKX'
-                                })
-                        if parsed_trades:
-                            self._process_trades(parsed_trades)
-                            self.exchange_status['OKX']['last_msg'] = time.time()
-                except Exception:
-                    logger.warning("WS OKX parse error", exc_info=True)
-
-    # ==================== WEBSOCKET - Kraken ====================
-
-    def _run_ws_kraken_spot(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_kraken_spot())
-            except Exception as e:
-                logger.error(f"WS Kraken Spot error: {e}")
-                self.exchange_status['KRK']['connected'] = False
-                time.sleep(5)
-
-    async def _ws_loop_kraken_spot(self):
-        url = "wss://ws.kraken.com/v2"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['KRK']['connected'] = True
-            logger.info("WS Kraken Spot connected")
-            args = [f"{coin}/USD" for coin in self.coins]
-            await ws.send(json.dumps({
-                "method": "subscribe",
-                "params": {"channel": "trade", "symbol": args}
-            }))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('channel') == 'trade' and msg.get('type') == 'update':
-                        parsed_trades = []
-                        for t in msg.get('data', []):
-                            coin = t['symbol'].split('/')[0]
-                            if coin in self.coins:
-                                dtime = datetime.fromisoformat(t['timestamp'].replace('Z', '+00:00'))
-                                parsed_trades.append({
-                                    'coin': coin, 'px': float(t['price']), 'sz': float(t['qty']),
-                                    'side': 'B' if t['side'] == 'buy' else 'S',
-                                    'time': int(dtime.timestamp() * 1000), 'exchange': 'KRK'
-                                })
-                        if parsed_trades:
-                            self._process_trades(parsed_trades)
-                            self.exchange_status['KRK']['last_msg'] = time.time()
-                except Exception:
-                    logger.warning("WS Kraken parse error", exc_info=True)
-
-    def _run_ws_kraken_futures(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_kraken_futures())
-            except Exception as e:
-                logger.error(f"WS Kraken Futures error: {e}")
-                self.exchange_status['KRK']['connected'] = False
-                time.sleep(5)
-
-    async def _ws_loop_kraken_futures(self):
-        url = "wss://futures.kraken.com/ws/v1"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            logger.info("WS Kraken Futures connected")
-            # Kraken Futures symbols are like pi_btcusd
-            args = [f"pi_{coin.lower()}usd" for coin in self.coins]
-            await ws.send(json.dumps({
-                "event": "subscribe",
-                "feed": "trade",
-                "product_ids": args
-            }))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('feed') == 'trade' and 'qty' in msg:
-                        coin = msg['product_id'].split('_')[1].replace('usd', '').upper()
-                        self._process_trades([{
-                            'coin': coin, 'px': float(msg['price']), 'sz': float(msg['qty']),
-                            'side': 'B' if msg['side'] == 'buy' else 'S',
-                            'time': int(msg['time']), 'exchange': 'KRK_FUT'
-                        }])
-                        self.exchange_status['KRK']['last_msg'] = time.time()
-                except Exception: pass
-
     # ==================== WEBSOCKET - Coinbase ====================
 
     def _run_ws_coinbase(self):
@@ -741,47 +467,6 @@ class HyperliquidCollector:
                                 self.exchange_status['CB']['last_msg'] = time.time()
                 except Exception:
                     logger.warning("WS Coinbase parse error", exc_info=True)
-
-    # ==================== WEBSOCKET - Deribit ====================
-
-    def _run_ws_deribit(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_deribit())
-            except Exception as e:
-                logger.error(f"WS Deribit error: {e}")
-                self.exchange_status['DRB']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_deribit(self):
-        url = "wss://www.deribit.com/ws/api/v2"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['DRB']['connected'] = True
-            logger.info("WS Deribit (All Futures) connected")
-            # Subscribe to all trades for our coins (Perpetuals, Dated, and Spot)
-            for coin in self.coins:
-               if coin == 'PAXG': continue
-               await ws.send(json.dumps({
-                   "jsonrpc": "2.0", "id": 1, "method": "public/subscribe",
-                   "params": {"channels": [f"trades.{coin}.raw", f"trades.{coin}_USDC.raw", f"trades.{coin}_USDT.raw"]}
-               }))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if 'params' in msg and 'data' in msg['params']:
-                        for t in msg['params']['data']:
-                            inst = t['instrument_name']
-                            if 'OPTION' in inst: continue # Skip options for now
-                            coin = inst.split('-')[0]
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['price']), 'sz': float(t['amount']),
-                                'side': 'B' if t['direction'] == 'buy' else 'S',
-                                'time': int(t['timestamp']), 'exchange': 'DRB_FUT'
-                            }])
-                            self.exchange_status['DRB']['last_msg'] = time.time()
-                except Exception: pass
 
     # ==================== WEBSOCKET - Bitfinex ====================
 
@@ -883,211 +568,6 @@ class HyperliquidCollector:
                                 'time': int(t['ts']), 'exchange': 'BGT_SPOT'
                             }])
                             self.exchange_status['BGT']['last_msg'] = time.time()
-                except Exception: pass
-
-    def _run_ws_bitget_futures(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_bitget_futures())
-            except Exception as e:
-                err_str = str(e).lower()
-                self.exchange_status['BGT']['connected'] = False
-                if "close frame" in err_str or "rejected" in err_str or "403" in err_str:
-                    logger.info("Bitget Futures: Regional Block detected.")
-                    break
-                logger.error(f"WS Bitget Futures error: {e}")
-                time.sleep(10)
-
-    async def _ws_loop_bitget_futures(self):
-        # Using alternate domain to try and bypass regional blocks
-        url = "wss://ws.bitgetapi.com/v2/ws/public"
-        headers = {"Origin": "https://www.bitget.com"}
-        async with websockets.connect(url, extra_headers=headers, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['BGT']['connected'] = True
-            args = [{"instType": "usdt-futures", "channel": "trade", "instId": f"{coin}USDT"} for coin in self.coins]
-            await ws.send(json.dumps({"op": "subscribe", "args": args}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if 'data' in msg:
-                        for t in msg['data']:
-                            coin = t['instId'].replace('USDT', '')
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
-                                'side': 'B' if t['side'] == 'buy' else 'S',
-                                'time': int(t['ts']), 'exchange': 'BGT_FUT'
-                            }])
-                            self.exchange_status['BGT']['last_msg'] = time.time()
-                except Exception: pass
-
-    # ==================== WEBSOCKET - MEXC ====================
-
-    def _run_ws_mexc(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_mexc())
-            except Exception as e:
-                logger.error(f"WS MEXC error: {e}")
-                self.exchange_status['MEXC']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_mexc(self):
-        url = "wss://wbs.mexc.com/ws"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['MEXC']['connected'] = True
-            subs = [f"spot@public.deals.v3.api@{coin}USDT" for coin in self.coins]
-            await ws.send(json.dumps({"method": "SUBSCRIPTION", "params": subs}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if 'd' in msg and 'deals' in msg['d']:
-                        coin = msg['s'].replace('USDT', '')
-                        for t in msg['d']['deals']:
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['p']), 'sz': float(t['v']),
-                                'side': 'B' if t['S'] == 1 else 'S',
-                                'time': int(t['t']), 'exchange': 'MEXC'
-                            }])
-                            self.exchange_status['MEXC']['last_msg'] = time.time()
-                except Exception: pass
-
-    def _run_ws_mexc_futures(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_mexc_futures())
-            except Exception as e:
-                logger.error(f"WS MEXC Futures error: {e}")
-                self.exchange_status['MEXC']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_mexc_futures(self):
-        url = "wss://contract.mexc.com/edge"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['MEXC']['connected'] = True
-            for coin in self.coins:
-                await ws.send(json.dumps({"method": "sub.deal", "param": {"symbol": f"{coin}_USDT"}}))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('channel') == 'push.deal':
-                        d = msg['data']
-                        coin = msg['symbol'].split('_')[0]
-                        self._process_trades([{
-                            'coin': coin, 'px': float(d['p']), 'sz': float(d['v']),
-                            'side': 'B' if d['T'] == 1 else 'S',
-                            'time': int(d['t']), 'exchange': 'MEXC_FUT'
-                        }])
-                        self.exchange_status['MEXC']['last_msg'] = time.time()
-                except Exception: pass
-
-    # ==================== WEBSOCKET - Upbit ====================
-
-    def _run_ws_upbit(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_upbit())
-            except Exception as e:
-                logger.error(f"WS Upbit error: {e}")
-                self.exchange_status['UPB']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_upbit(self):
-        url = "wss://api.upbit.com/websocket/v1"
-        krw_usd = 1380.0 # Approximate conversion for volume normalization
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['UPB']['connected'] = True
-            codes = [f"KRW-{coin}" for coin in self.coins if coin != 'PAXG']
-            await ws.send(json.dumps([{"ticket": "whaleflow"}, {"type": "trade", "codes": codes}]))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    coin = msg['code'].split('-')[1]
-                    # Normalize KRW to USD
-                    px_usd = float(msg['trade_price']) / krw_usd
-                    sz_units = float(msg['trade_volume'])
-                    self._process_trades([{
-                        'coin': coin, 'px': px_usd, 'sz': sz_units,
-                        'side': 'B' if msg['ask_bid'] == 'BID' else 'S',
-                        'time': int(msg['trade_timestamp']), 'exchange': 'UPB'
-                    }])
-                    self.exchange_status['UPB']['last_msg'] = time.time()
-                except Exception: pass
-
-    # ==================== WEBSOCKET - Gate.io ====================
-
-    def _run_ws_gate(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_gate())
-            except Exception as e:
-                logger.error(f"WS Gate error: {e}")
-                self.exchange_status['GATE']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_gate(self):
-        url = "wss://api.gateio.ws/ws/v4/"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            self.exchange_status['GATE']['connected'] = True
-            args = [f"{coin}_USDT" for coin in self.coins]
-            await ws.send(json.dumps({
-                "time": int(time.time()), "channel": "spot.trades",
-                "event": "subscribe", "payload": args
-            }))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('event') == 'update' and 'result' in msg:
-                        t = msg['result']
-                        coin = t['currency_pair'].split('_')[0]
-                        self._process_trades([{
-                            'coin': coin, 'px': float(t['price']), 'sz': float(t['amount']),
-                            'side': 'B' if t['side'] == 'buy' else 'S',
-                            'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE'
-                        }])
-                        self.exchange_status['GATE']['last_msg'] = time.time()
-                except Exception: pass
-
-    def _run_ws_gate_futures(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while self.running:
-            try:
-                loop.run_until_complete(self._ws_loop_gate_futures())
-            except Exception as e:
-                logger.error(f"WS Gate Futures error: {e}")
-                self.exchange_status['GATE']['connected'] = False
-                time.sleep(10)
-
-    async def _ws_loop_gate_futures(self):
-        url = "wss://fx-ws.gateio.ws/v4/ws/usdt"
-        async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
-            args = [f"{coin}_USDT" for coin in self.coins]
-            await ws.send(json.dumps({
-                "time": int(time.time()), "channel": "futures.trades",
-                "event": "subscribe", "payload": args
-            }))
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                    if msg.get('event') == 'update' and 'result' in msg:
-                        for t in msg['result']:
-                            coin = t['contract'].split('_')[0]
-                            self._process_trades([{
-                                'coin': coin, 'px': float(t['p']), 'sz': float(t['size']),
-                                'side': 'B' if float(t['size']) > 0 else 'S',
-                                'time': int(float(t['create_time']) * 1000), 'exchange': 'GATE_FUT'
-                            }])
-                            self.exchange_status['GATE']['last_msg'] = time.time()
                 except Exception: pass
 
     # ==================== TRADE PROCESSING ====================
@@ -1809,68 +1289,77 @@ class HyperliquidCollector:
                 }
             return state
 
-    # ==================== LOCAL WS SERVER ====================
+    # ==================== CLOUD READY SERVER ====================
 
     def _run_local_server(self):
-        self.local_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.local_loop)
+        """Runs the FastAPI server for WebSockets and Health Checks"""
+        app = FastAPI(title="WhaleFlow API")
 
-        async def main():
-            async with websockets.serve(self._local_ws_handler, "127.0.0.1", CONFIG['ws_port']):
-                logger.info(f"Local WS Server running on ws://127.0.0.1:{CONFIG['ws_port']}")
-                while self.running:
-                    await asyncio.sleep(1)
+        @app.get("/")
+        @app.get("/health")
+        async def health():
+            return {"status": "ok", "uptime": time.time() - self.started_at}
 
-        try:
-            self.local_loop.run_until_complete(main())
-        except Exception as e:
-            logger.error(f"Local WS Server error: {e}")
-
-    async def _local_ws_handler(self, websocket):
-        self.local_clients.add(websocket)
-        try:
-            async for message in websocket:
-                try:
-                    data = json.loads(message)
-                    if data.get('method') == 'ping':
-                        await websocket.send(json.dumps({'channel': 'pong'}))
-                    elif data.get('method') == 'clear_current':
-                        with self._data_lock:
-                            for c in self.coins:
-                                self.data[c]['current_buy_vol'] = 0.0
-                                self.data[c]['current_sell_vol'] = 0.0
-                                self.data[c]['current_buy_count'] = 0
-                                self.data[c]['current_sell_count'] = 0
-                    elif data.get('method') == 'set_threshold':
-                        coin = data.get('coin')
-                        val = data.get('value')
-                        if coin and val:
+        @app.websocket("/ws")
+        async def websocket_endpoint(websocket: WebSocket):
+            await websocket.accept()
+            self.local_clients.add(websocket)
+            logger.info("New dashboard client connected via FastAPI WS")
+            try:
+                while True:
+                    message = await websocket.receive_text()
+                    try:
+                        data = json.loads(message)
+                        if data.get('method') == 'ping':
+                            await websocket.send_text(json.dumps({'channel': 'pong'}))
+                        elif data.get('method') == 'clear_current':
                             with self._data_lock:
-                                self.whale_thresholds[coin] = float(val)
-                            # Force a snapshot save soon to persist this
-                            logger.info(f"Setting whale threshold for {coin} to ${val}")
-                except Exception:
-                    pass
-        except Exception:
-            pass  # Client disconnected â€” normal for Streamlit iframes
-        finally:
-            self.local_clients.discard(websocket)
+                                for c in self.coins:
+                                    self.data[c]['current_buy_vol'] = 0.0
+                                    self.data[c]['current_sell_vol'] = 0.0
+                                    self.data[c]['current_buy_count'] = 0
+                                    self.data[c]['current_sell_count'] = 0
+                                logger.info("Current accumulation cleared by user")
+                        elif data.get('method') == 'set_threshold':
+                            coin = data.get('coin')
+                            val = data.get('value')
+                            if coin and val:
+                                with self._data_lock:
+                                    self.whale_thresholds[coin] = float(val)
+                                logger.info(f"Threshold for {coin} set to ${val}")
+                    except Exception as e:
+                        logger.error(f"WS Message Error: {e}")
+            except WebSocketDisconnect:
+                logger.info("Dashboard client disconnected")
+            except Exception as e:
+                logger.error(f"WS Error: {e}")
+            finally:
+                self.local_clients.discard(websocket)
+
+        # Broadcast helper for the rest of the app
+        self._fastapi_app = app
+        
+        # Determine port (Cloud providers like Koyeb/Render inject PORT env var)
+        port = int(os.environ.get("PORT", CONFIG['ws_port']))
+        host = "0.0.0.0" # Bind to all interfaces for cloud
+        
+        logger.info(f"🚀 Launching Cloud-Ready server on {host}:{port}")
+        uvicorn.run(app, host=host, port=port, log_level="warning")
 
     async def _broadcast_local(self, msg_str):
-        clients = list(self.local_clients)
-        if not clients:
+        if not self.local_clients:
             return
+        
+        # We need to handle this because broadcast is called from threads
+        # but self.local_clients are FastAPI WebSocket objects
         stale = []
-        for client in clients:
+        for client in list(self.local_clients):
             try:
-                await client.send(msg_str)
+                # FastAPI WebSocket.send_text is async, and we are in a sync thread or async loop
+                # If we are in the collector thread, we use a future
+                asyncio.run_coroutine_threadsafe(client.send_text(msg_str), self.local_loop)
             except Exception:
                 stale.append(client)
-        for client in stale:
-            self.local_clients.discard(client)
-
-
-
-
-
-
+        
+        for s in stale:
+            self.local_clients.discard(s)

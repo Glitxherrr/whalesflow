@@ -372,9 +372,9 @@ class WhaleFlowDashboard {
                 // Save locally
                 localStorage.setItem(`whaleflow_threshold_${this.currentCoin}`, val.toString());
                 
-                // Sync to Server
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({
+                // Sync to Server (Python Backend)
+                if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
+                    this.localWs.send(JSON.stringify({
                         method: 'set_threshold',
                         coin: this.currentCoin,
                         value: val
@@ -452,7 +452,14 @@ class WhaleFlowDashboard {
                     hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
                 }
 
-                this.showToast('Data cleared - tracking from now');
+                // Sync clear to Server (Python Backend)
+                if (this.localWs && this.localWs.readyState === WebSocket.OPEN) {
+                    this.localWs.send(JSON.stringify({
+                        method: 'clear_current'
+                    }));
+                }
+
+                this.showToast('Data cleared - tracking from now (Synced)');
             });
         }
 
@@ -498,13 +505,38 @@ class WhaleFlowDashboard {
         }
 
         try {
-            const host = window.location.hostname || '127.0.0.1';
-            this.localWs = new WebSocket(`ws://${host}:8765`);
+            // Cloud-Ready Backend Discovery
+            const urlParams = new URLSearchParams(window.location.search);
+            const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
+            
+            let wsUrl;
+            const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || !window.location.hostname;
+            
+            if (serverConfig) {
+                // User-defined server (e.g. whaleflow-api.koyeb.app)
+                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                // Sync with FastAPI endpoint added to collector.py
+                wsUrl = `${protocol}://${serverConfig.replace('ws://','').replace('wss://','')}/ws`;
+            } else if (isLocal) {
+                // Standard Local Dev
+                wsUrl = `ws://127.0.0.1:8765/ws`;
+            } else {
+                // Cloud Deploy where Frontend and Backend share the same domain (e.g. HuggingFace)
+                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                wsUrl = `${protocol}://${window.location.host}/ws`;
+            }
+
+            console.log(`📡 Connecting to WhaleFlow Backend: ${wsUrl}`);
+            this.localWs = new WebSocket(wsUrl);
+            
             this.localWs.onopen = () => {
-                console.log('Local backend connected successfully');
+                console.log('✅ Local/Cloud backend connected successfully');
                 this.localWsActive = true;
                 this._serverSystemState.connected = true;
                 this.updateSystemPanel();
+                
+                // If the user manually provided a server, remember it
+                if (serverConfig) localStorage.setItem('whaleflow_server_url', serverConfig);
             };
             this.localWs.onmessage = (event) => {
                 try {
