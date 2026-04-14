@@ -50,6 +50,7 @@ class WhaleFlowDashboard {
         this.dataViewMode = 'Historical';
         this.currentModeClearTime = 0;
         this._loadModeFromStorage();
+        this._loadCurrentFromStorage(); // Load volumes immediately
 
         // Desktop notifications
         this.desktopNotificationsEnabled = false;
@@ -2325,6 +2326,9 @@ class WhaleFlowDashboard {
                     : 'Press Clear Data to start tracking from now';
             }
         }
+        
+        // Apply loaded data to display variables immediately from the loaded store
+        this.loadCoinData(this.currentCoin);
     }
 
     getDisplayTrades() {
