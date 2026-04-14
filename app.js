@@ -292,7 +292,7 @@ class WhaleFlowDashboard {
             'markPrice', 'oraclePrice', 'openInterest', 'dayVolume',
             'obAsks', 'obBids', 'obLevels', 'whaleWallCount',
             'spreadValue', 'spreadPct',
-            'tradesList', 'tradeCount', 'clearDataBtn',
+            'tradesList', 'tradeCount', 'clearDataBtn', 'forceRefreshBtn',
             'imbalanceRatio',
             'obBuyWalls', 'obSellWalls', 'obBuyFill', 'obSellFill',
             'tradeBuyVol', 'tradeSellVol', 'tradeBuyFill', 'tradeSellFill',
@@ -470,6 +470,22 @@ class WhaleFlowDashboard {
                 }
 
                 this.showToast('Data cleared - tracking from now (Synced)');
+            });
+        }
+
+        // Force Refresh button
+        if (this.elements.forceRefreshBtn) {
+            this.elements.forceRefreshBtn.addEventListener('click', () => {
+                this.showToast('Performing hard refresh...');
+                setTimeout(() => {
+                    // Force reload bypassing cache
+                    window.location.reload(true);
+                    
+                    // Fallback using timestamp query as some browsers ignore reload(true)
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('force_refresh', Date.now().toString());
+                    window.location.href = url.toString();
+                }, 500);
             });
         }
 

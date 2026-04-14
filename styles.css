@@ -249,6 +249,43 @@ body {
     box-shadow: 0 0 8px var(--buy-glow);
 }
 
+/* Force Refresh Button */
+.force-refresh-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    margin-left: 10px;
+}
+
+.force-refresh-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.3);
+    transform: scale(1.05);
+}
+
+.force-refresh-btn:active {
+    transform: scale(0.95);
+}
+
+.force-refresh-btn .refresh-icon {
+    font-size: 1.1rem;
+    transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.force-refresh-btn:hover .refresh-icon {
+    transform: rotate(180deg);
+}
+
 .connection-status.disconnected .status-dot {
     background: var(--sell-primary);
     animation: none;
