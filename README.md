@@ -1,6 +1,6 @@
 ---
 title: WhaleFlow Dashboard
-emoji: 🐋
+emoji: ??
 colorFrom: blue
 colorTo: indigo
 sdk: docker
@@ -8,8 +8,30 @@ pinned: false
 ---
 
 # WhaleFlow Hyperliquid Tracker
-A real-time 24/7 dashboard for tracking mega-whales, absorption, and funding flips on Hyperliquid.
 
-### How to use:
-* Once the build is finished, the dashboard will appear above.
-* The system saves snapshots in the background even when you are not looking.
+A real-time dashboard for tracking mega-whales, absorption, funding flips, and order flow on Hyperliquid.
+
+## Project split
+
+- `apps/huggingface`: FastAPI/WebSocket deployment for Hugging Face Docker Spaces.
+- `apps/streamlit`: Streamlit deployment that reuses the same collector logic without starting the embedded FastAPI server.
+- `collector.py`: Shared backend logic used by both deployments.
+- `index.html`, `styles.css`, `app.js`: Shared frontend assets used by both deployments.
+
+## Run targets
+
+Hugging Face / Docker:
+
+```bash
+python app_huggingface.py
+```
+
+Streamlit:
+
+```bash
+streamlit run apps/streamlit/app.py
+```
+
+A compatibility wrapper is also kept at `streamlit_app.py` for platforms that expect that filename.
+
+

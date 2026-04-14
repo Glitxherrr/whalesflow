@@ -16,6 +16,7 @@ import signal as _signal
 import atexit
 import os
 import sys
+from pathlib import Path
 from collections import deque
 from datetime import datetime
 from typing import TypedDict, List, Dict, Union, Optional, Any, Set, Deque, cast
@@ -127,12 +128,17 @@ class MemoryLogHandler(logging.Handler):
     def get_entries(self):
         return list(self.buffer)
 
+# ===== PATHS =====
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / 'logs'
+RUNTIME_DIR = BASE_DIR / 'runtime'
+
 # ===== LOGGING SETUP =====
-os.makedirs('logs', exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 logger = logging.getLogger('whaleflow')
 logger.setLevel(logging.INFO)
 _fh = logging.handlers.RotatingFileHandler(
-    'logs/collector.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
+    LOG_DIR / 'collector.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8'
 )
 _fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
 logger.addHandler(_fh)
@@ -173,7 +179,7 @@ CONFIG = {
     'volume_climax_buy_low': 0.4,
     'regime_hold_time': 900,
     'regime_thresholds': {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.35, 'XRP': 0.30, 'PAXG': 0.08},
-    'snapshot_path': 'runtime/state_snapshot.json',
+    'snapshot_path': str(RUNTIME_DIR / 'state_snapshot.json'),
     'max_trade_value': 100_000_000_000_000,
     'trade_time_tolerance_ms': 300_000,
     'dedupe_cache_size': 2000,
@@ -189,18 +195,18 @@ app = FastAPI()
 # Serve static files from root for cloud deployment compatibility
 @app.get("/")
 async def get_index():
-    return FileResponse("index.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(BASE_DIR / "index.html"), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/styles.css")
 async def get_styles():
-    return FileResponse("styles.css", media_type="text/css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(BASE_DIR / "styles.css"), media_type="text/css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/app.js")
 async def get_app():
-    return FileResponse("app.js", media_type="application/javascript", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(BASE_DIR / "app.js"), media_type="application/javascript", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # Mount static for everything else
-app.mount("/static", StaticFiles(directory="."), name="static")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR)), name="static")
 
 class HyperliquidCollector:
     """Singleton background collector."""
@@ -339,6 +345,7 @@ class HyperliquidCollector:
         self.running = True
         self.started_at = time.time()
         self.local_loop = asyncio.new_event_loop() # Create loop for broadcasting
+        self.enable_local_server = os.environ.get('WHALEFLOW_ENABLE_LOCAL_SERVER', '1').lower() not in {'0', 'false', 'no'}
         
         def run_loop():
             asyncio.set_event_loop(self.local_loop)
@@ -365,8 +372,11 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_snapshots, daemon=True).start()
         threading.Thread(target=self._run_pressure, daemon=True).start()
         
-        # Server runs in main thread or its own thread
-        threading.Thread(target=self._run_local_server, daemon=True).start()
+        # Streamlit mode disables the embedded FastAPI server and only uses state injection.
+        if self.enable_local_server:
+            threading.Thread(target=self._run_local_server, daemon=True).start()
+        else:
+            logger.info('Embedded FastAPI server disabled for Streamlit mode')
         
         logger.info("✅ WhaleFlow Collector System Started")
         
@@ -1969,3 +1979,4 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         collector.shutdown()
+
