@@ -15,6 +15,9 @@ STATE_FILE = ROOT_DIR / "runtime" / "shared_state.json"
 STATE_LOCK = threading.Lock()
 _WRITE_INTERVAL = 15  # seconds between background state saves
 
+# Backend WebSocket port — must match collector CONFIG['ws_port']
+_WS_PORT = int(os.environ.get("WHALEFLOW_WS_PORT", "7860"))
+
 
 def _ensure_runtime_dir():
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -56,7 +59,10 @@ def _get_shared_collector():
         if str(ROOT_DIR) not in sys.path:
             sys.path.insert(0, str(ROOT_DIR))
 
-        os.environ["WHALEFLOW_ENABLE_LOCAL_SERVER"] = "0"
+        # Enable the embedded FastAPI/WS server so the frontend can connect
+        # for live trade streams from ALL exchanges.
+        os.environ["WHALEFLOW_ENABLE_LOCAL_SERVER"] = "1"
+        os.environ.setdefault("PORT", str(_WS_PORT))
         from collector import HyperliquidCollector
 
         collector = HyperliquidCollector.get_instance()
@@ -117,6 +123,7 @@ def run_embedded_app() -> None:
         '<script src="app.js"></script>',
         """<script>
 window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
+window.__LOCAL_WS_URL__ = '__LOCAL_WS_URL_PLACEHOLDER__';
 
 """
         + js
@@ -125,10 +132,20 @@ window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
     )
 
     def build_dashboard_html(state: dict) -> str:
-        return html_template.replace(
+        # Build the WebSocket URL for the backend.
+        # The frontend is inside a Streamlit iframe; it needs the real hostname
+        # with the backend port to reach the FastAPI WS server.
+        ws_url = f"ws://127.0.0.1:{_WS_PORT}/ws"
+
+        html = html_template.replace(
             "__SERVER_STATE_PLACEHOLDER__",
             json.dumps(state),
         )
+        html = html.replace(
+            "__LOCAL_WS_URL_PLACEHOLDER__",
+            ws_url,
+        )
+        return html
 
     def get_state() -> dict:
         """
@@ -141,24 +158,12 @@ window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
         except Exception:
             return _load_state() or {}
 
-    def render_dashboard() -> None:
-        st.components.v1.html(
-            build_dashboard_html(get_state()),
-            height=2200,
-            scrolling=True,
-        )
-
-    fragment = getattr(st, "fragment", None)
-    if callable(fragment):
-
-        @fragment(run_every="30s")
-        def auto_refresh_dashboard() -> None:
-            render_dashboard()
-
-        auto_refresh_dashboard()
-    else:
-        render_dashboard()
-        st.caption("Auto-refresh requires Streamlit ≥ 1.33.")
+    # Render the dashboard ONCE — live updates come via WebSocket, no page refresh needed.
+    st.components.v1.html(
+        build_dashboard_html(get_state()),
+        height=2200,
+        scrolling=True,
+    )
 
 
 if APP_PATH.exists():

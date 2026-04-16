@@ -72,30 +72,36 @@ class WhaleFlowDashboard {
         this._localWsMaxRetries = 20;
         this._localWsGaveUp = false;
 
-        // Immediately hydrate from /state HTTP endpoint — this runs in parallel
-        // with WebSocket setup so the dashboard is never blank while WS is connecting.
-        // Works even if the WS handshake is delayed by HuggingFace's proxy warmup.
-        if (!window.__SERVER_STATE__) {
+        // Detect Streamlit/embedded mode: the backend injects __SERVER_STATE__
+        // for instant hydration, and __LOCAL_WS_URL__ for live WebSocket streaming.
+        this._isServerMode = !!window.__SERVER_STATE__;
+
+        if (this._isServerMode) {
+            // Instantly hydrate from the injected server state
+            this.loadServerState(window.__SERVER_STATE__);
+
+            // Connect to Hyperliquid public WS for orderbook
+            this.connectWebSocket();
+
+            // The page is persistent (no 30s refresh), so enable all intervals
+        } else {
+            // Standalone mode: connect to local backend WS + fallback
             this._fetchStateHTTP();
+            this._connectWhenReady();
+            this.fetchFundingData();
         }
 
-        this._connectWhenReady();
-        if (!window.__SERVER_STATE__) this.fetchFundingData();
-        this.startClock();
-
-        // Periodic updates
+        // Periodic updates — enabled for both modes (page is persistent)
         this.fundingInterval = setInterval(() => {
             if (!this.localWsActive) this.fetchFundingData();
         }, 30000);
         this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
         this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
-
-        // Absorption engine: snapshot every 30 seconds, evaluate every 30 seconds
-        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000); // 30s
-        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000); // 30s
-
-        // Reversal Radar: evaluate all signals every 30 seconds
+        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000);
+        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000);
         this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
+
+        this.startClock();
 
         // System panel state
         this._serverSystemState = {
@@ -123,12 +129,7 @@ class WhaleFlowDashboard {
         };
         this._binanceGeoWarned = false;
 
-        // Load server-accumulated state if available (Streamlit deployment)
-        if (window.__SERVER_STATE__) {
-            this.loadServerState(window.__SERVER_STATE__);
-        }
-
-        // Absorption preview removed ? real engine handles detection
+        // Absorption preview removed — real engine handles detection
     }
 
     _newCoinData() {
@@ -679,6 +680,11 @@ class WhaleFlowDashboard {
      * but now called from a dedicated method so _connectLocalWs can reuse it cleanly.
      */
     _buildLocalWsUrl() {
+        // Server-injected WS URL (from Streamlit) takes top priority
+        if (window.__LOCAL_WS_URL__) {
+            return { url: window.__LOCAL_WS_URL__, serverConfig: null };
+        }
+
         const urlParams = new URLSearchParams(window.location.search);
         const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -2763,6 +2769,17 @@ class WhaleFlowDashboard {
                     sells: serverCoin.total_sell_vol
                 };
 
+            }
+
+            // Current mode — server is source of truth (works across all devices)
+            if (this._isServerMode) {
+                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
+                d.currentSellVolume = serverCoin.current_sell_vol || 0;
+                d.currentBuyCount = serverCoin.current_buy_count || 0;
+                d.currentSellCount = serverCoin.current_sell_count || 0;
+                if (serverCoin.current_since) {
+                    this.currentModeClearTime = serverCoin.current_since * 1000;
+                }
             }
 
             // Market Metrics - Immediate Hydration
