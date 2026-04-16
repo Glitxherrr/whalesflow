@@ -39,7 +39,7 @@
                 <label for="whaleThreshold">🐋 Min Size</label>
                 <div class="threshold-input">
                     <span class="dollar-sign">$</span>
-                    <input type="number" id="whaleThreshold" value="50000" min="50" step="5000">
+                    <input type="number" id="whaleThreshold" value="50000" min="1000" step="5000">
                 </div>
             </div>
             <div class="notification-toggle" id="notifToggle" title="Toggle desktop notifications">
@@ -47,9 +47,6 @@
                 <span class="notif-label" id="notifLabel">Alerts Off</span>
             </div>
             <div class="live-clock" id="liveClock"></div>
-            <button id="forceRefreshBtn" class="force-refresh-btn" title="Force Hard Reload (Ctrl+Shift+R)">
-                <span class="refresh-icon">🔄</span>
-            </button>
         </div>
     </header>
 
@@ -176,7 +173,7 @@
                             <div class="card-value mono" id="markPrice">$0.00</div>
                             <div class="market-status-slot">
                                 <div class="absorption-status" id="absorptionStatus">
-                                    <span class="absorption-badge" style="display: none;"></span>
+                                    <span class="absorption-badge">Waiting for data...</span>
                                 </div>
                             </div>
                         </div>
@@ -187,13 +184,15 @@
                         </div>
                     </div>
                     <div class="market-hidden-meta" aria-hidden="true"><span class="price-val mono" id="oraclePrice">$0.00</span></div>
-                    <div class="price-row price-row-stack compact-price-details">
-                        <span class="price-label">Rolling 24h Volume</span>
-                        <div class="price-stack">
-                            <span class="mini-hourly-change mono" id="dayVolumeHourlyChange">>1h --</span>
-                            <span class="mini-hourly-change mono" id="dayVolumeFourHourChange">>4h --</span>
-                            <span class="mini-hourly-change mono" id="dayVolumeDailyChange">>24h --</span>
-                            <span class="price-val mono" id="dayVolume">$0</span>
+                    <div class="price-details compact-price-details">
+                        <div class="price-row price-row-stack">
+                            <span class="price-label">24h Volume</span>
+                            <div class="price-stack">
+                                <span class="mini-hourly-change mono" id="dayVolumeHourlyChange">>1h --</span>
+                                <span class="mini-hourly-change mono" id="dayVolumeFourHourChange">>4h --</span>
+                                <span class="mini-hourly-change mono" id="dayVolumeDailyChange">>24h --</span>
+                                <span class="price-val mono" id="dayVolume">$0</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -554,12 +553,6 @@
                 <div class="exch-item" id="exchOKX"><span class="exch-dot"></span> OKX <span class="exch-age mono">--</span></div>
                 <div class="exch-item" id="exchKRK"><span class="exch-dot"></span> KRK <span class="exch-age mono">--</span></div>
                 <div class="exch-item" id="exchCB"><span class="exch-dot"></span> CB <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchDRB"><span class="exch-dot"></span> DRB <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchBFX"><span class="exch-dot"></span> BFX <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchBGT"><span class="exch-dot"></span> BGT <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchMEXC"><span class="exch-dot"></span> MEXC <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchUPB"><span class="exch-dot"></span> UPB <span class="exch-age mono">--</span></div>
-                <div class="exch-item" id="exchGATE"><span class="exch-dot"></span> GATE <span class="exch-age mono">--</span></div>
             </div>
         </div>
     </section>
