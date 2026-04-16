@@ -121,9 +121,9 @@ def run_embedded_app() -> None:
     )
     html_template = html_template.replace(
         '<script src="app.js"></script>',
-        """<script>
+        f"""<script>
 window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
-window.__LOCAL_WS_URL__ = '__LOCAL_WS_URL_PLACEHOLDER__';
+window.__WS_PORT__ = {_WS_PORT};
 
 """
         + js
@@ -132,20 +132,10 @@ window.__LOCAL_WS_URL__ = '__LOCAL_WS_URL_PLACEHOLDER__';
     )
 
     def build_dashboard_html(state: dict) -> str:
-        # Build the WebSocket URL for the backend.
-        # The frontend is inside a Streamlit iframe; it needs the real hostname
-        # with the backend port to reach the FastAPI WS server.
-        ws_url = f"ws://127.0.0.1:{_WS_PORT}/ws"
-
-        html = html_template.replace(
+        return html_template.replace(
             "__SERVER_STATE_PLACEHOLDER__",
             json.dumps(state),
         )
-        html = html.replace(
-            "__LOCAL_WS_URL_PLACEHOLDER__",
-            ws_url,
-        )
-        return html
 
     def get_state() -> dict:
         """

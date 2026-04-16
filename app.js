@@ -72,6 +72,27 @@ class WhaleFlowDashboard {
         this._localWsMaxRetries = 20;
         this._localWsGaveUp = false;
 
+        // System panel state (initialized BEFORE loadServerState so it can be overridden)
+        this._serverSystemState = {
+            started_at: 0,
+            uptime_seconds: 0,
+            connected: false,
+            last_funding_update: 0,
+            last_trade_update: 0,
+            snapshot_loaded: false,
+            exchange_status: {},
+        };
+        this._logEntries = [];
+        this._logSidebarOpen = false;
+        this.localExchangeStatus = {
+            'BIN': { connected: false, last_msg: 0 },
+            'BYB': { connected: false, last_msg: 0 },
+            'OKX': { connected: false, last_msg: 0 },
+            'KRK': { connected: false, last_msg: 0 },
+            'CB':  { connected: false, last_msg: 0 }
+        };
+        this._binanceGeoWarned = false;
+
         // Detect Streamlit/embedded mode: the backend injects __SERVER_STATE__
         // for instant hydration, and __LOCAL_WS_URL__ for live WebSocket streaming.
         this._isServerMode = !!window.__SERVER_STATE__;
@@ -80,10 +101,8 @@ class WhaleFlowDashboard {
             // Instantly hydrate from the injected server state
             this.loadServerState(window.__SERVER_STATE__);
 
-            // Connect to Hyperliquid public WS for orderbook
+            // Connect to Hyperliquid public WS for orderbook + backend WS for live trades
             this.connectWebSocket();
-
-            // The page is persistent (no 30s refresh), so enable all intervals
         } else {
             // Standalone mode: connect to local backend WS + fallback
             this._fetchStateHTTP();
@@ -102,32 +121,7 @@ class WhaleFlowDashboard {
         this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
 
         this.startClock();
-
-        // System panel state
-        this._serverSystemState = {
-            started_at: 0,
-            uptime_seconds: 0,
-            connected: false,
-            last_funding_update: 0,
-            last_trade_update: 0,
-            snapshot_loaded: false,
-            exchange_status: {},
-        };
         this._systemPanelInterval = setInterval(() => this.updateSystemPanel(), 5000);
-
-        // Log sidebar state
-        this._logEntries = [];
-        this._logSidebarOpen = false;
-
-        // Local status for browser-managed exchanges
-        this.localExchangeStatus = {
-            'BIN': { connected: false, last_msg: 0 },
-            'BYB': { connected: false, last_msg: 0 },
-            'OKX': { connected: false, last_msg: 0 },
-            'KRK': { connected: false, last_msg: 0 },
-            'CB':  { connected: false, last_msg: 0 }
-        };
-        this._binanceGeoWarned = false;
 
         // Absorption preview removed — real engine handles detection
     }
@@ -680,9 +674,19 @@ class WhaleFlowDashboard {
      * but now called from a dedicated method so _connectLocalWs can reuse it cleanly.
      */
     _buildLocalWsUrl() {
-        // Server-injected WS URL (from Streamlit) takes top priority
-        if (window.__LOCAL_WS_URL__) {
-            return { url: window.__LOCAL_WS_URL__, serverConfig: null };
+        // Server-injected WS port (from Streamlit) — dynamically build URL
+        // using the browser's hostname so it works across devices, not just localhost
+        if (window.__WS_PORT__) {
+            let hostname;
+            try {
+                // Escape the Streamlit iframe to get the real hostname
+                hostname = window.parent.location.hostname || window.location.hostname;
+            } catch (e) {
+                // Cross-origin iframe — fall back to current window
+                hostname = window.location.hostname;
+            }
+            hostname = hostname || '127.0.0.1';
+            return { url: `ws://${hostname}:${window.__WS_PORT__}/ws`, serverConfig: null };
         }
 
         const urlParams = new URLSearchParams(window.location.search);
