@@ -59,9 +59,9 @@ def _get_shared_collector():
         if str(ROOT_DIR) not in sys.path:
             sys.path.insert(0, str(ROOT_DIR))
 
-        # Enable the embedded FastAPI/WS server so the frontend can connect
-        # for live trade streams from ALL exchanges.
-        os.environ["WHALEFLOW_ENABLE_LOCAL_SERVER"] = "1"
+        # Disable the embedded FastAPI/WS server — on Streamlit Cloud, port 7860
+        # is not exposed to the browser. Exchange data is delivered via state injection.
+        os.environ["WHALEFLOW_ENABLE_LOCAL_SERVER"] = "0"
         os.environ.setdefault("PORT", str(_WS_PORT))
         from collector import HyperliquidCollector
 
@@ -148,12 +148,29 @@ window.__WS_PORT__ = {_WS_PORT};
         except Exception:
             return _load_state() or {}
 
-    # Render the dashboard ONCE — live updates come via WebSocket, no page refresh needed.
-    st.components.v1.html(
-        build_dashboard_html(get_state()),
-        height=2200,
-        scrolling=True,
-    )
+    # Render the dashboard with auto-refresh.
+    # On Streamlit Cloud, port 7860 is NOT exposed to the browser, so the frontend
+    # can't connect to the backend WS directly. We use fragment auto-refresh to
+    # push fresh server state (including ALL exchange trades) every 10 seconds.
+    fragment = getattr(st, "fragment", None)
+    if callable(fragment):
+
+        @fragment(run_every="10s")
+        def auto_refresh_dashboard() -> None:
+            st.components.v1.html(
+                build_dashboard_html(get_state()),
+                height=2200,
+                scrolling=True,
+            )
+
+        auto_refresh_dashboard()
+    else:
+        st.components.v1.html(
+            build_dashboard_html(get_state()),
+            height=2200,
+            scrolling=True,
+        )
+        st.caption("Auto-refresh requires Streamlit ≥ 1.33.")
 
 
 if APP_PATH.exists():

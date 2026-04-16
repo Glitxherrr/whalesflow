@@ -94,31 +94,37 @@ class WhaleFlowDashboard {
         this._binanceGeoWarned = false;
 
         // Detect Streamlit/embedded mode: the backend injects __SERVER_STATE__
-        // for instant hydration, and __LOCAL_WS_URL__ for live WebSocket streaming.
+        // with ALL exchange data. The page re-renders every ~10s with fresh state.
         this._isServerMode = !!window.__SERVER_STATE__;
 
         if (this._isServerMode) {
+            // Server provides ALL exchange data — skip local WS (port not exposed)
+            this._localWsGaveUp = true;
+            this.localWsActive = false;
+
             // Instantly hydrate from the injected server state
             this.loadServerState(window.__SERVER_STATE__);
 
-            // Connect to Hyperliquid public WS for orderbook + backend WS for live trades
+            // Connect only to Hyperliquid public WS for live orderbook
             this.connectWebSocket();
+
+            // Skip periodic intervals — page re-renders every 10s with fresh state
         } else {
             // Standalone mode: connect to local backend WS + fallback
             this._fetchStateHTTP();
             this._connectWhenReady();
             this.fetchFundingData();
-        }
 
-        // Periodic updates — enabled for both modes (page is persistent)
-        this.fundingInterval = setInterval(() => {
-            if (!this.localWsActive) this.fetchFundingData();
-        }, 30000);
-        this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
-        this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
-        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000);
-        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000);
-        this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
+            // Periodic updates — only needed in standalone mode
+            this.fundingInterval = setInterval(() => {
+                if (!this.localWsActive) this.fetchFundingData();
+            }, 30000);
+            this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
+            this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
+            this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000);
+            this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000);
+            this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
+        }
 
         this.startClock();
         this._systemPanelInterval = setInterval(() => this.updateSystemPanel(), 5000);
