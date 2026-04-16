@@ -133,6 +133,11 @@ BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / 'logs'
 RUNTIME_DIR = BASE_DIR / 'runtime'
 
+# HuggingFace Spaces mounts a persistent volume at /data that survives container
+# restarts.  Use it when available so the snapshot is not lost on cold-start.
+_HF_PERSISTENT = Path('/data')
+SNAPSHOT_DIR = _HF_PERSISTENT if _HF_PERSISTENT.exists() else RUNTIME_DIR
+
 # ===== LOGGING SETUP =====
 os.makedirs(LOG_DIR, exist_ok=True)
 logger = logging.getLogger('whaleflow')
@@ -179,12 +184,12 @@ CONFIG = {
     'volume_climax_buy_low': 0.4,
     'regime_hold_time': 900,
     'regime_thresholds': {'BTC': 0.15, 'ETH': 0.20, 'SOL': 0.35, 'XRP': 0.30, 'PAXG': 0.08},
-    'snapshot_path': str(RUNTIME_DIR / 'state_snapshot.json'),
+    'snapshot_path': str(SNAPSHOT_DIR / 'state_snapshot.json'),
     'max_trade_value': 100_000_000_000_000,
     'trade_time_tolerance_ms': 300_000,
     'dedupe_cache_size': 2000,
-    'funding_history_maxlen': 5000,
-    'market_history_maxlen': 5000,
+    'funding_history_maxlen': 8640,  # 72 hours at 30s intervals
+    'market_history_maxlen': 8640,   # 72 hours at 30s intervals
     'abs_snapshots_maxlen': 2880,
     'pressure_history_maxlen': 2880,
     'volume_buckets_maxlen': 2880,
@@ -192,21 +197,127 @@ CONFIG = {
 
 app = FastAPI()
 
-# Serve static files from root for cloud deployment compatibility
+# Set by HyperliquidCollector.get_instance() once the singleton is fully initialised.
+# _run_local_server() waits on this before calling uvicorn.run() so that the first
+# WebSocket connection is never served before the collector is ready.
+_server_ready = threading.Event()
+
+_NO_CACHE = {"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"}
+
+# ── Static assets ──────────────────────────────────────────────────────────────
 @app.get("/")
 async def get_index():
-    return FileResponse(str(BASE_DIR / "index.html"), headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(BASE_DIR / "index.html"), headers=_NO_CACHE)
 
 @app.get("/styles.css")
 async def get_styles():
-    return FileResponse(str(BASE_DIR / "styles.css"), media_type="text/css", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(str(BASE_DIR / "styles.css"), media_type="text/css", headers=_NO_CACHE)
 
 @app.get("/app.js")
-async def get_app():
-    return FileResponse(str(BASE_DIR / "app.js"), media_type="application/javascript", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+async def get_app_js():
+    return FileResponse(str(BASE_DIR / "app.js"), media_type="application/javascript", headers=_NO_CACHE)
 
 # Mount static for everything else
 app.mount("/static", StaticFiles(directory=str(BASE_DIR)), name="static")
+
+# ── API routes registered at module level so they are compiled into the ASGI app
+#    BEFORE uvicorn.run() is called.  Defining routes inside _run_local_server()
+#    after the server has started means FastAPI never sees them — they silently 404.
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    """Liveness probe — also used by the frontend to wait for backend readiness."""
+    collector = HyperliquidCollector._instance
+    if collector is None:
+        # Process is alive but collector hasn't initialised yet — still healthy
+        return {"status": "starting", "uptime": 0}
+    return {"status": "ok", "uptime": time.time() - collector.started_at}
+
+
+@app.get("/state")
+async def get_state():
+    """
+    HTTP fallback for full state hydration.
+    The frontend calls this immediately on page load so the dashboard is populated
+    even if the WebSocket connection is delayed or fails (e.g. on hard refresh while
+    the proxy is still warming up).
+    """
+    from fastapi.responses import JSONResponse
+    collector = HyperliquidCollector._instance
+    if collector is None:
+        return JSONResponse({"error": "collector_not_ready"}, status_code=503)
+    return JSONResponse(collector.get_state(), headers=_NO_CACHE)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Live push channel — sends a full_state snapshot on connect, then streams
+    incremental updates.  Defined at module level so the route is always compiled
+    into the ASGI app before uvicorn starts.
+    """
+    collector = HyperliquidCollector._instance
+    if collector is None:
+        await websocket.close(code=1013)  # Try again later
+        return
+
+    await websocket.accept()
+    collector.local_clients.add(websocket)
+    logger.info("New dashboard client connected via FastAPI WS")
+    try:
+        with collector._data_lock:
+            snapshot = collector._get_full_state_snapshot()
+            await websocket.send_text(json.dumps({
+                'channel': 'full_state',
+                'data': snapshot
+            }))
+
+            display_names = {
+                'HL': 'Hyperliquid Future', 'BIN': 'Binance Spot/Future',
+                'BYB': 'Bybit Spot/Future', 'OKX': 'OKX Spot/Future',
+                'KRK': 'Kraken Spot/Future', 'CB': 'Coinbase Spot/Future',
+                'DRB': 'Deribit Future', 'BFX': 'Bitfinex Spot',
+                'BGT': 'Bitget Spot/Future', 'MEXC': 'MEXC Spot',
+                'UPB': 'Upbit Spot', 'GATE': 'Gate.io Spot/Future',
+            }
+            status_log = [
+                f"{display_names.get(ex, ex)}: {'Connected' if collector.exchange_status[ex]['connected'] else 'Disconnected'}"
+                for ex in collector.exchanges
+            ]
+            logger.info(f"Dashboard Refresh — Exchange Status: {', '.join(status_log)}")
+
+        while True:
+            message = await websocket.receive_text()
+            try:
+                data = json.loads(message)
+                if data.get('method') == 'ping':
+                    await websocket.send_text(json.dumps({'channel': 'pong'}))
+                elif data.get('method') == 'clear_current':
+                    with collector._data_lock:
+                        for c in collector.coins:
+                            collector.data[c]['current_buy_vol'] = 0.0
+                            collector.data[c]['current_sell_vol'] = 0.0
+                            collector.data[c]['current_buy_count'] = 0
+                            collector.data[c]['current_sell_count'] = 0
+                            collector.data[c]['current_since'] = time.time() * 1000
+                        logger.info("Current accumulation cleared by user")
+                        collector._save_snapshot()
+                elif data.get('method') == 'set_threshold':
+                    coin = data.get('coin')
+                    val = data.get('value')
+                    if coin and val:
+                        with collector._data_lock:
+                            collector.whale_thresholds[coin] = float(val)
+                        logger.info(f"Threshold for {coin} set to ${val}")
+            except Exception as e:
+                logger.error(f"WS Message Error: {e}")
+    except WebSocketDisconnect:
+        logger.info("Dashboard client disconnected")
+    except Exception as e:
+        logger.error(f"WS Error: {e}")
+    finally:
+        collector.local_clients.discard(websocket)
 
 class HyperliquidCollector:
     """Singleton background collector."""
@@ -232,6 +343,7 @@ class HyperliquidCollector:
                     cls._instance = inst
                     sys._whaleflow_collector = inst
                     inst.start()
+                    _server_ready.set()  # Ungate uvicorn — collector is ready
         return cls._instance
 
     def __init__(self):
@@ -371,6 +483,7 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_signals, daemon=True).start()
         threading.Thread(target=self._run_snapshots, daemon=True).start()
         threading.Thread(target=self._run_pressure, daemon=True).start()
+        threading.Thread(target=self._run_persist, daemon=True).start()
         
         # Streamlit mode disables the embedded FastAPI server and only uses state injection.
         if self.enable_local_server:
@@ -396,6 +509,16 @@ class HyperliquidCollector:
         self.running = False
         self._save_snapshot()
         logger.info("Collector shutdown complete.")
+
+    def _run_persist(self):
+        """Dedicated thread: saves snapshot every 10s independently of the pipeline."""
+        time.sleep(20)  # Let collector warm up first
+        while self.running:
+            try:
+                self._save_snapshot()
+            except Exception as e:
+                logger.error(f"Persist error: {e}")
+            time.sleep(10)
 
     # ==================== SNAPSHOT PERSISTENCE ====================
 
@@ -1336,6 +1459,13 @@ class HyperliquidCollector:
                 self._take_snapshot()
                 self._evaluate_absorption()
                 self._save_snapshot()
+                # Push fresh full state to all connected dashboard clients
+                if self.local_loop and self.local_clients:
+                    snapshot = self._get_full_state_snapshot()
+                    msg = json.dumps({'channel': 'full_state', 'data': snapshot})
+                    asyncio.run_coroutine_threadsafe(
+                        self._broadcast_local(msg), self.local_loop
+                    )
             except Exception as e:
                 logger.error(f"Snapshot error: {e}")
             time.sleep(CONFIG['snapshot_interval'])
@@ -1873,89 +2003,14 @@ class HyperliquidCollector:
         return self.get_state()
 
     def _run_local_server(self):
-        """Runs the FastAPI server for WebSockets and Health Checks"""
-        global app
-
-        @app.get("/health")
-        async def health():
-            return {"status": "ok", "uptime": time.time() - self.started_at}
-
-        @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await websocket.accept()
-            self.local_clients.add(websocket)
-            logger.info("New dashboard client connected via FastAPI WS")
-            try:
-                # 1. Immediate Hydration: Send full state on connect
-                with self._data_lock:
-                    snapshot = self._get_full_state_snapshot()
-                    await websocket.send_text(json.dumps({
-                        'channel': 'full_state',
-                        'data': snapshot
-                    }))
-                    
-                    # Log connected exchanges for dashboard refresh visibility
-                    status_log = []
-                    # We map internal keys to descriptive Spot/Future names
-                    display_names = {
-                        'HL': 'Hyperliquid Future',
-                        'BIN': 'Binance Spot/Future',
-                        'BYB': 'Bybit Spot/Future',
-                        'OKX': 'OKX Spot/Future',
-                        'KRK': 'Kraken Spot/Future',
-                        'CB': 'Coinbase Spot/Future',
-                        'DRB': 'Deribit Future',
-                        'BFX': 'Bitfinex Spot',
-                        'BGT': 'Bitget Spot/Future',
-                        'MEXC': 'MEXC Spot',
-                        'UPB': 'Upbit Spot',
-                        'GATE': 'Gate.io Spot/Future'
-                    }
-                    for ex in self.exchanges:
-                        conn = self.exchange_status[ex]['connected']
-                        name = display_names.get(ex, ex)
-                        status = "Connected" if conn else "Disconnected"
-                        status_log.append(f"{name}: {status}")
-                    
-                    logger.info(f"Dashboard Refresh - Exchange Status: {', '.join(status_log)}")
-
-                while True:
-                    message = await websocket.receive_text()
-                    try:
-                        data = json.loads(message)
-                        if data.get('method') == 'ping':
-                            await websocket.send_text(json.dumps({'channel': 'pong'}))
-                        elif data.get('method') == 'clear_current':
-                            with self._data_lock:
-                                for c in self.coins:
-                                    self.data[c]['current_buy_vol'] = 0.0
-                                    self.data[c]['current_sell_vol'] = 0.0
-                                    self.data[c]['current_buy_count'] = 0
-                                    self.data[c]['current_sell_count'] = 0
-                                    self.data[c]['current_since'] = time.time() * 1000
-                                logger.info("Current accumulation cleared by user")
-                                self._save_snapshot() # Immediate persistence
-                        elif data.get('method') == 'set_threshold':
-                            coin = data.get('coin')
-                            val = data.get('value')
-                            if coin and val:
-                                with self._data_lock:
-                                    self.whale_thresholds[coin] = float(val)
-                                logger.info(f"Threshold for {coin} set to ${val}")
-                    except Exception as e:
-                        logger.error(f"WS Message Error: {e}")
-            except WebSocketDisconnect:
-                logger.info("Dashboard client disconnected")
-            except Exception as e:
-                logger.error(f"WS Error: {e}")
-            finally:
-                self.local_clients.discard(websocket)
-
-        # Determine port
+        """Runs the FastAPI/uvicorn server. Routes are registered at module level."""
         port = int(os.environ.get("PORT", CONFIG['ws_port']))
         host = "0.0.0.0"
-        
-        logger.info(f"ðŸš€ Launching Cloud-Ready server on {host}:{port}")
+        # Block until the collector singleton is fully initialised.  Without this gate
+        # there is a narrow window where uvicorn accepts the first WebSocket connection
+        # before _instance is set, causing an immediate 1013 close.
+        _server_ready.wait(timeout=30)
+        logger.info(f"🚀 Launching Cloud-Ready server on {host}:{port}")
         uvicorn.run(app, host=host, port=port, log_level="warning")
 
     async def _broadcast_local(self, msg_str):

@@ -68,7 +68,18 @@ class WhaleFlowDashboard {
         // Init
         this.renderCoinSelector();
         this.setupEventListeners();
-        this.connectWebSocket();
+        this._localWsRetryCount = 0;
+        this._localWsMaxRetries = 20;
+        this._localWsGaveUp = false;
+
+        // Immediately hydrate from /state HTTP endpoint — this runs in parallel
+        // with WebSocket setup so the dashboard is never blank while WS is connecting.
+        // Works even if the WS handshake is delayed by HuggingFace's proxy warmup.
+        if (!window.__SERVER_STATE__) {
+            this._fetchStateHTTP();
+        }
+
+        this._connectWhenReady();
         if (!window.__SERVER_STATE__) this.fetchFundingData();
         this.startClock();
 
@@ -545,67 +556,9 @@ class WhaleFlowDashboard {
             return;
         }
 
-        try {
-            // Intelligent Backend Discovery (Relative to the Dashboard)
-            const urlParams = new URLSearchParams(window.location.search);
-            const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
-            
-            let wsUrl;
-            
-            if (serverConfig) {
-                // Manual Override (e.g. connecting from local PC to a phone or cloud server)
-                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-                wsUrl = `${protocol}://${serverConfig.replace('ws://','').replace('wss://','')}/ws`;
-            } else {
-                // Auto-Discovery (Works for HuggingFace, Localhost, and Docker)
-                // If dashboard is served at http://ip:port/, backend is at ws://ip:port/ws
-                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-                const host = window.location.host || '127.0.0.1:7860';
-                wsUrl = `${protocol}://${host}/ws`;
-            }
-
-            console.log(`\u{1F50C} Connecting to WhaleFlow Backend: ${wsUrl}`);
-            this.localWs = new WebSocket(wsUrl);
-            
-            this.localWs.onopen = () => {
-                console.log('? Backend linked successfully');
-                this.localWsActive = true;
-                this._serverSystemState.connected = true;
-                this.updateSystemPanel();
-                
-                if (serverConfig) localStorage.setItem('whaleflow_server_url', serverConfig);
-            };
-            this.localWs.onmessage = (event) => {
-                try {
-                    const msg = JSON.parse(event.data);
-                    if (msg.channel === 'pong') return;
-                    this.handleMessage(msg);
-                } catch (err) { /* ignore */ }
-            };
-            this.localWs.onclose = (event) => {
-                console.log('Local WS closed, falling back to all public exchanges direct natively:', event.code, event.reason);
-                this.localWsActive = false;
-                this._serverSystemState.connected = false;
-                this.updateSystemPanel();
-                // Cloud Deployment Fallback: Subscribe to HL trades directly
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({
-                        method: 'subscribe',
-                        subscription: { type: 'trades', coin: this.currentCoin }
-                    }));
-                }
-                setTimeout(() => {
-                    if(!this.publicExchangesConnected) {
-                        this.connectPublicExchanges();
-                        this.publicExchangesConnected = true;
-                    }
-                }, 1000);
-            };
-            this.localWs.onerror = (err) => {
-                console.error('Local WS error, gracefully falling back...');
-            };
-        } catch (err) {
-            console.error('Local WebSocket creation failed:', err);
+        // Connect to backend with retry logic (see _connectLocalWs)
+        if (!this._localWsGaveUp) {
+            this._connectLocalWs();
         }
 
         this.ws.onopen = () => {
@@ -684,6 +637,211 @@ class WhaleFlowDashboard {
         const delay = Math.min(this.reconnectDelay * Math.pow(1.3, this.reconnectAttempts), 30000);
         console.log(`Reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${this.reconnectAttempts})`);
         setTimeout(() => this.connectWebSocket(), delay);
+    }
+
+    /**
+     * Poll /health until the FastAPI backend is ready, then call connectWebSocket().
+     * This prevents the localWs from racing against a not-yet-started server on hard refresh —
+     * the most common cause of the "empty dashboard" bug on HuggingFace Spaces.
+     */
+    _connectWhenReady() {
+        const healthUrl = window.location.origin + '/health';
+        const maxWait = 30000; // give up polling after 30s and connect anyway
+        const interval = 1500; // poll every 1.5s
+        const started = Date.now();
+
+        const attempt = () => {
+            fetch(healthUrl, { cache: 'no-store' })
+                .then(r => {
+                    if (r.ok) {
+                        console.log('✅ Backend /health OK — connecting WebSocket');
+                        this.connectWebSocket();
+                    } else {
+                        throw new Error(`health ${r.status}`);
+                    }
+                })
+                .catch(err => {
+                    if (Date.now() - started >= maxWait) {
+                        console.warn('Backend health check timed out — connecting anyway');
+                        this.connectWebSocket();
+                        return;
+                    }
+                    console.log(`Backend not ready yet (${err.message}), retrying in ${interval}ms…`);
+                    setTimeout(attempt, interval);
+                });
+        };
+
+        attempt();
+    }
+
+    /**
+     * Build the backend WebSocket URL using the same auto-discovery logic as before,
+     * but now called from a dedicated method so _connectLocalWs can reuse it cleanly.
+     */
+    _buildLocalWsUrl() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const serverConfig = urlParams.get('server') || localStorage.getItem('whaleflow_server_url');
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+
+        if (serverConfig) {
+            const clean = serverConfig.replace('ws://', '').replace('wss://', '');
+            return { url: `${protocol}://${clean}/ws`, serverConfig };
+        }
+
+        const host = window.location.host || '127.0.0.1:7860';
+        return { url: `${protocol}://${host}/ws`, serverConfig: null };
+    }
+
+    /**
+     * Connect to the WhaleFlow backend WebSocket with exponential-backoff retry.
+     *
+     * Previous behaviour: one attempt → on first close, permanently fall back to
+     * public exchange feeds. This caused the "empty on hard refresh" bug because the
+     * browser reached the page from CDN cache while FastAPI was still starting up (~2-3s),
+     * the WS handshake failed, onclose fired, and the frontend never tried again.
+     *
+     * New behaviour: retry up to _localWsMaxRetries times (backoff 3s→10s cap).
+     * Only after all retries are exhausted does it permanently fall back.
+     */
+    _connectLocalWs() {
+        if (this._localWsGaveUp) return;
+
+        // Clean up any previous instance
+        if (this.localWs) {
+            this.localWs.onopen = null;
+            this.localWs.onmessage = null;
+            this.localWs.onclose = null;
+            this.localWs.onerror = null;
+            this.localWs.close();
+            this.localWs = null;
+        }
+
+        const { url: wsUrl, serverConfig } = this._buildLocalWsUrl();
+        console.log(`🔌 Connecting to WhaleFlow Backend (attempt ${this._localWsRetryCount + 1}/${this._localWsMaxRetries}): ${wsUrl}`);
+
+        try {
+            this.localWs = new WebSocket(wsUrl);
+        } catch (err) {
+            console.error('Local WebSocket creation failed:', err);
+            this._scheduleLocalWsRetry();
+            return;
+        }
+
+        this.localWs.onopen = () => {
+            console.log('✅ Backend linked successfully');
+            this._localWsRetryCount = 0; // reset on success
+            this.localWsActive = true;
+            this._serverSystemState.connected = true;
+            this.updateSystemPanel();
+
+            if (serverConfig) localStorage.setItem('whaleflow_server_url', serverConfig);
+        };
+
+        this.localWs.onmessage = (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                if (msg.channel === 'pong') return;
+                this.handleMessage(msg);
+            } catch (err) { /* ignore malformed frames */ }
+        };
+
+        this.localWs.onclose = (event) => {
+            console.log(`Local WS closed (code ${event.code}):`, event.reason || '—');
+            this.localWsActive = false;
+            this._serverSystemState.connected = false;
+            this.updateSystemPanel();
+
+            // 1013 = Try Again Later: server process is alive but the collector
+            // isn't ready yet (cold-start race).  Retry quickly without counting
+            // against the retry budget so we don't fall back to public exchanges.
+            if (event.code === 1013) {
+                console.log('Server not ready (1013) — retrying in 2s…');
+                setTimeout(() => this._connectLocalWs(), 2000);
+                return;
+            }
+
+            // If we already had a successful session, schedule a fast reconnect
+            if (this._localWsRetryCount === 0 && event.code !== 1000) {
+                // Abnormal close after a working connection — retry quickly
+                setTimeout(() => this._connectLocalWs(), 2000);
+                return;
+            }
+
+            this._scheduleLocalWsRetry();
+        };
+
+        this.localWs.onerror = () => {
+            // onerror always precedes onclose; logging here avoids double-handling
+            console.warn('Local WS error — waiting for onclose to decide next step');
+        };
+    }
+
+    _scheduleLocalWsRetry() {
+        if (this._localWsGaveUp) return;
+
+        this._localWsRetryCount++;
+
+        if (this._localWsRetryCount >= this._localWsMaxRetries) {
+            console.warn(`Backend unreachable after ${this._localWsMaxRetries} attempts — falling back to public exchanges permanently`);
+            this._localWsGaveUp = true;
+            this._fallbackToPublicExchanges();
+            return;
+        }
+
+        // Exponential backoff: 3s, 4.5s, 6.75s … capped at 10s
+        const delay = Math.min(3000 * Math.pow(1.5, this._localWsRetryCount - 1), 10000);
+        console.log(`Backend retry ${this._localWsRetryCount}/${this._localWsMaxRetries} in ${(delay / 1000).toFixed(1)}s…`);
+        setTimeout(() => this._connectLocalWs(), delay);
+    }
+
+    _fallbackToPublicExchanges() {
+        // Subscribe to HL trades directly via the main WS
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+                method: 'subscribe',
+                subscription: { type: 'trades', coin: this.currentCoin }
+            }));
+        }
+        if (!this.publicExchangesConnected) {
+            setTimeout(() => {
+                this.connectPublicExchanges();
+                this.publicExchangesConnected = true;
+            }, 1000);
+        }
+    }
+
+    /**
+     * HTTP fallback for state hydration.
+     *
+     * On hard refresh the browser gets the HTML from HuggingFace's CDN instantly,
+     * but the FastAPI /ws endpoint may not be reachable for several seconds while
+     * the proxy warms up.  Rather than showing a blank dashboard during that window,
+     * we fire a plain GET /state immediately.  If it succeeds we hydrate right away;
+     * if the backend isn't ready yet we retry every 2s up to 15 times.
+     *
+     * Once the WebSocket connects and sends a full_state message, that data takes
+     * over and this polling stops — so there's no double-hydration problem.
+     */
+    _fetchStateHTTP(attempt = 0) {
+        if (this.localWsActive) return; // WS already connected — no need
+        const maxAttempts = 15;
+
+        fetch('/state', { cache: 'no-store' })
+            .then(r => {
+                if (r.status === 503) throw new Error('not_ready');
+                if (!r.ok) throw new Error(`http_${r.status}`);
+                return r.json();
+            })
+            .then(state => {
+                if (this.localWsActive) return; // WS beat us to it — discard
+                console.log('✅ State hydrated via HTTP /state fallback');
+                this.loadServerState(state);
+            })
+            .catch(err => {
+                if (attempt < maxAttempts && !this.localWsActive) {
+                    setTimeout(() => this._fetchStateHTTP(attempt + 1), 2000);
+                }
+            });
     }
 
     switchCoin(newCoin) {
@@ -999,7 +1157,7 @@ class WhaleFlowDashboard {
                 time: now,
                 funding: meta.funding,
             });
-            if (fundingStore.fundingHistory.length > 6000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-6000);
+            if (fundingStore.fundingHistory.length > 9000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-9000);
         });
 
         const activeMeta = this.allCoinMeta.get(this.currentCoin);
@@ -1234,7 +1392,7 @@ class WhaleFlowDashboard {
             openInterest: (meta.openInterest || 0) * (meta.markPx || 0),
             dayVolume: meta.dayNtlVlm || 0,
         });
-        if (d.marketHistory.length > 6000) d.marketHistory = d.marketHistory.slice(-6000);
+        if (d.marketHistory.length > 9000) d.marketHistory = d.marketHistory.slice(-9000);
 
         if (rg.priceHistory.length < 2) return;
 
@@ -1358,7 +1516,7 @@ class WhaleFlowDashboard {
                 // Push funding history for ALL coins (not just active)
                 const fundingStore = this.getCoinData(coin);
                 fundingStore.fundingHistory.push({ time: now, funding: coinMeta.funding });
-                if (fundingStore.fundingHistory.length > 6000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-6000);
+                if (fundingStore.fundingHistory.length > 9000) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-9000);
             });
 
             const activeMeta = this.allCoinMeta.get(this.currentCoin);
@@ -1864,6 +2022,8 @@ class WhaleFlowDashboard {
     }
 
     _getDeltaBase(history, cutoffMs, maxGapMs = Number.POSITIVE_INFINITY) {
+        const now = Date.now();
+        const requestedWindowMs = now - cutoffMs; // e.g. 3600000 for 1h
         let base = null;
         for (let i = 0; i < history.length; i++) {
             if (history[i].time <= cutoffMs) {
@@ -1872,12 +2032,30 @@ class WhaleFlowDashboard {
                 break;
             }
         }
-        const fallback = base || history[0] || null;
-        const complete = !!(base && (cutoffMs - base.time) <= maxGapMs);
-        return {
-            base: fallback,
-            complete,
-        };
+
+        // If we found a data point at or before the cutoff, use it directly.
+        if (base) {
+            const complete = (cutoffMs - base.time) <= maxGapMs;
+            return { base, complete };
+        }
+
+        // No data point exists at the cutoff.  Fall back to the oldest
+        // entry in history, but ONLY if it covers at least 50% of the
+        // requested window.  This prevents a 5-minute-old first entry
+        // from producing a misleading ">1h" change value, while still
+        // allowing approximate values when e.g. 40min of data exists
+        // for a 1h window.
+        const oldest = history[0] || null;
+        if (oldest) {
+            const dataSpan = now - oldest.time;
+            const minRequired = requestedWindowMs * 0.5;
+            if (dataSpan >= minRequired) {
+                return { base: oldest, complete: false };
+            }
+        }
+
+        // Not enough history — signal the badge to show "---"
+        return { base: null, complete: false };
     }
 
     _getPercentChange(current, baseValue) {
@@ -1918,7 +2096,8 @@ class WhaleFlowDashboard {
         const fourHourEl = this.elements.fundingFourHourChange;
         const dailyEl = this.elements.fundingDailyChange;
 
-        rateEl.textContent = (rate * 100).toFixed(4) + '%';
+        const rateText = (rate * 100).toFixed(4) + '%';
+        if (rateEl.textContent !== rateText) rateEl.textContent = rateText;
 
         let badgeClass, badgeText, currentState;
         // Hyperliquid funding can be very small; using a more sensitive threshold (0.1 bps / hour)

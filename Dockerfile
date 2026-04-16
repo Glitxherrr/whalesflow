@@ -15,4 +15,7 @@ EXPOSE 7860
 
 RUN mkdir -p runtime logs && chmod 777 runtime logs
 
+HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=6 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')" || exit 1
+
 CMD ["python", "app_huggingface.py"]
