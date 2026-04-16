@@ -15,9 +15,6 @@ STATE_FILE = ROOT_DIR / "runtime" / "shared_state.json"
 STATE_LOCK = threading.Lock()
 _WRITE_INTERVAL = 15  # seconds between background state saves
 
-# Backend WebSocket port — must match collector CONFIG['ws_port']
-_WS_PORT = int(os.environ.get("WHALEFLOW_WS_PORT", "7860"))
-
 
 def _ensure_runtime_dir():
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -59,10 +56,9 @@ def _get_shared_collector():
         if str(ROOT_DIR) not in sys.path:
             sys.path.insert(0, str(ROOT_DIR))
 
-        # Disable the embedded FastAPI/WS server — on Streamlit Cloud, port 7860
-        # is not exposed to the browser. Exchange data is delivered via state injection.
+        # Disable the embedded FastAPI/WS server — on Streamlit Cloud, only
+        # port 8501 is exposed. Exchange data flows via BroadcastChannel.
         os.environ["WHALEFLOW_ENABLE_LOCAL_SERVER"] = "0"
-        os.environ.setdefault("PORT", str(_WS_PORT))
         from collector import HyperliquidCollector
 
         collector = HyperliquidCollector.get_instance()
@@ -83,6 +79,28 @@ def _get_shared_collector():
         return collector
 
     return _create()
+
+
+def _get_live_state(collector) -> dict:
+    """
+    Get a trimmed state snapshot for the live data pump.
+    Reduces payload size for frequent broadcasting by limiting history lengths.
+    The initial full render has complete history; this only needs recent data.
+    """
+    try:
+        state = collector.get_state()
+    except Exception:
+        return _load_state() or {}
+
+    # Trim heavy arrays to keep broadcast payload under ~200KB
+    for coin_data in state.get('coins', {}).values():
+        if 'whale_trades' in coin_data:
+            coin_data['whale_trades'] = coin_data['whale_trades'][:200]
+        if 'funding_history' in coin_data:
+            coin_data['funding_history'] = coin_data['funding_history'][-200:]
+        if 'market_history' in coin_data:
+            coin_data['market_history'] = coin_data['market_history'][-200:]
+    return state
 
 
 def run_embedded_app() -> None:
@@ -121,9 +139,8 @@ def run_embedded_app() -> None:
     )
     html_template = html_template.replace(
         '<script src="app.js"></script>',
-        f"""<script>
+        """<script>
 window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
-window.__WS_PORT__ = {_WS_PORT};
 
 """
         + js
@@ -131,46 +148,51 @@ window.__WS_PORT__ = {_WS_PORT};
 </script>""",
     )
 
+    def get_full_state() -> dict:
+        """Full state for initial render — includes complete history."""
+        try:
+            return collector.get_state()
+        except Exception:
+            return _load_state() or {}
+
     def build_dashboard_html(state: dict) -> str:
         return html_template.replace(
             "__SERVER_STATE_PLACEHOLDER__",
             json.dumps(state),
         )
 
-    def get_state() -> dict:
-        """
-        Try live collector first; fall back to last persisted state on disk.
-        This means a freshly connected device still sees real data immediately
-        rather than an empty dashboard while the collector warms up.
-        """
-        try:
-            return collector.get_state()
-        except Exception:
-            return _load_state() or {}
+    # ── 1. Main dashboard — rendered ONCE, never destroyed ──────────────────
+    st.components.v1.html(
+        build_dashboard_html(get_full_state()),
+        height=2200,
+        scrolling=True,
+    )
 
-    # Render the dashboard with auto-refresh.
-    # On Streamlit Cloud, port 7860 is NOT exposed to the browser, so the frontend
-    # can't connect to the backend WS directly. We use fragment auto-refresh to
-    # push fresh server state (including ALL exchange trades) every 10 seconds.
+    # ── 2. Live data pump — tiny hidden fragment that broadcasts fresh state ──
+    #    Uses BroadcastChannel API to send data to the persistent dashboard
+    #    iframe without destroying/recreating it. The fragment only re-renders
+    #    this small hidden component every 5 seconds.
     fragment = getattr(st, "fragment", None)
     if callable(fragment):
 
-        @fragment(run_every="10s")
-        def auto_refresh_dashboard() -> None:
+        @fragment(run_every="5s")
+        def live_data_pump() -> None:
+            state = _get_live_state(collector)
+            state_json = json.dumps(state)
             st.components.v1.html(
-                build_dashboard_html(get_state()),
-                height=2200,
-                scrolling=True,
+                f"""<script>
+try {{
+    const bc = new BroadcastChannel('whaleflow_live');
+    bc.postMessage({state_json});
+    bc.close();
+}} catch(e) {{
+    console.warn('BroadcastChannel failed:', e);
+}}
+</script>""",
+                height=0,
             )
 
-        auto_refresh_dashboard()
-    else:
-        st.components.v1.html(
-            build_dashboard_html(get_state()),
-            height=2200,
-            scrolling=True,
-        )
-        st.caption("Auto-refresh requires Streamlit ≥ 1.33.")
+        live_data_pump()
 
 
 if APP_PATH.exists():

@@ -94,37 +94,51 @@ class WhaleFlowDashboard {
         this._binanceGeoWarned = false;
 
         // Detect Streamlit/embedded mode: the backend injects __SERVER_STATE__
-        // with ALL exchange data. The page re-renders every ~10s with fresh state.
+        // with ALL exchange data. The page is persistent (no reloads).
+        // Live updates arrive via BroadcastChannel from a hidden Streamlit fragment.
         this._isServerMode = !!window.__SERVER_STATE__;
 
         if (this._isServerMode) {
-            // Server provides ALL exchange data — skip local WS (port not exposed)
+            // Server provides ALL exchange data — skip local WS (port not exposed on Streamlit Cloud)
             this._localWsGaveUp = true;
             this.localWsActive = false;
 
             // Instantly hydrate from the injected server state
             this.loadServerState(window.__SERVER_STATE__);
 
-            // Connect only to Hyperliquid public WS for live orderbook
+            // Connect to Hyperliquid public WS for live orderbook + HL trades
             this.connectWebSocket();
 
-            // Skip periodic intervals — page re-renders every 10s with fresh state
+            // Listen for live state broadcasts from the Streamlit data pump.
+            // A hidden fragment broadcasts fresh server state every ~5s via BroadcastChannel.
+            // This gives us live multi-exchange data without page reloads.
+            try {
+                this._broadcastChannel = new BroadcastChannel('whaleflow_live');
+                this._broadcastChannel.onmessage = (e) => {
+                    if (e.data && e.data.coins) {
+                        this.loadServerState(e.data);
+                    }
+                };
+                console.log('📡 BroadcastChannel listener active — live updates enabled');
+            } catch (err) {
+                console.warn('BroadcastChannel not available:', err);
+            }
         } else {
             // Standalone mode: connect to local backend WS + fallback
             this._fetchStateHTTP();
             this._connectWhenReady();
             this.fetchFundingData();
-
-            // Periodic updates — only needed in standalone mode
-            this.fundingInterval = setInterval(() => {
-                if (!this.localWsActive) this.fetchFundingData();
-            }, 30000);
-            this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
-            this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
-            this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000);
-            this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000);
-            this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
         }
+
+        // Periodic updates — enabled for both modes (page is persistent)
+        this.fundingInterval = setInterval(() => {
+            if (!this.localWsActive) this.fetchFundingData();
+        }, 30000);
+        this.pressureInterval = setInterval(() => this.recordPressureSnapshot(), 30000);
+        this.currentSnapshotInterval = setInterval(() => this._saveCurrentSnapshotToStorage(), 30000);
+        this.absSnapshotInterval = setInterval(() => this.takeAbsorptionSnapshot(), 30000);
+        this.absEvalInterval = setInterval(() => this.evaluateAbsorption(), 30000);
+        this.radarInterval = setInterval(() => this.evaluateReversalSignals(), 30000);
 
         this.startClock();
         this._systemPanelInterval = setInterval(() => this.updateSystemPanel(), 5000);
