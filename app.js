@@ -859,11 +859,21 @@ class WhaleFlowDashboard {
                         d.currentSellCount++;
                     }
 
-                    // Fire notification
+                    // Build notification message
                     const sideEmoji = isBuy ? '🟢' : '🔴';
                     const valStr = value >= 1e6 ? `$${(value/1e6).toFixed(2)}M` : `$${(value/1e3).toFixed(0)}K`;
                     const toastMsg = `⚡ AGG ${sideEmoji} ${coin} ${agg.side} ${valStr} (${fills} fills) on ${exch}`;
+                    const logMsg = `AGG ${coin} ${agg.side} ${valStr} — ${fills} fills on ${exch} @ $${price.toLocaleString()}`;
 
+                    // Always add to system logs
+                    const nowShort = new Date().toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    this._logEntries.push({
+                        timestamp: Date.now() / 1000, timeShort: nowShort,
+                        level: 'INFO', msg: logMsg
+                    });
+                    if (this._logEntries.length > 500) this._logEntries.shift();
+
+                    // Fire toast + desktop notification (with cooldown)
                     if (this._canNotify(`agg_${coin}`, 30000)) {
                         this.sendAlert(toastMsg, {
                             desktopTitle: `⚡ Aggregated Whale — ${coin}`,
@@ -872,6 +882,11 @@ class WhaleFlowDashboard {
                         });
                     }
                 });
+
+                // Re-render log sidebar for any INFO agg entries that didn't go through sendAlert
+                if (aggTrades.length > 0) {
+                    this._renderLogSidebar();
+                }
 
                 // Re-render if any agg trades hit current coin
                 if (aggTrades.some(t => (t.coin || this.currentCoin) === this.currentCoin)) {
@@ -2344,6 +2359,16 @@ class WhaleFlowDashboard {
     sendAlert(message, { desktopTitle, desktopBody, toastClass } = {}) {
         // Always show in-app toast
         this.showToast(message, toastClass || '');
+
+        // Add to system logs sidebar
+        const cleanMsg = message.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').trim();
+        const nowShort = new Date().toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        this._logEntries.push({
+            timestamp: Date.now() / 1000, timeShort: nowShort,
+            level: 'WARNING', msg: cleanMsg
+        });
+        if (this._logEntries.length > 500) this._logEntries.shift();
+        this._renderLogSidebar();
 
         // Desktop notification if enabled + permission granted
         if (this.desktopNotificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
