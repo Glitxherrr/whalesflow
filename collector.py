@@ -571,10 +571,7 @@ class HyperliquidCollector:
             if 'whale_thresholds' in state:
                 self.whale_thresholds.update(state['whale_thresholds'])
             
-            # Restore log buffer
-            if state.get('log_buffer'):
-                _mh.buffer.clear()
-                _mh.buffer.extend(state['log_buffer'])
+            # Skip restoring log_buffer — old errors/warnings should not reappear after restart
 
             with self._data_lock:
                 for coin in self.coins:
@@ -2113,7 +2110,7 @@ class HyperliquidCollector:
                 'snapshot_loaded': self.snapshot_loaded,
                 'exchange_status': self.exchange_status,
                 'whale_thresholds': self.whale_thresholds,
-                'log_buffer': _mh.get_entries(),
+                'log_buffer': [e for e in _mh.get_entries() if e.get('timestamp', 0) >= self.started_at],
                 'coins': {}
             }
             for coin in self.coins:

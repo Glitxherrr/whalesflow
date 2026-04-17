@@ -812,7 +812,80 @@ class WhaleFlowDashboard {
                     this._serverSystemState.exchange_status[ex].connected = true;
                     this._serverSystemState.exchange_status[ex].last_msg = nowSec;
                 });
-                this.handleTrades(msg.data);
+
+                // Separate aggregated whale trades from normal trades
+                const normalTrades = [];
+                const aggTrades = [];
+                (msg.data || []).forEach(t => {
+                    if (t.agg) aggTrades.push(t);
+                    else normalTrades.push(t);
+                });
+
+                // Process normal trades as usual
+                if (normalTrades.length > 0) {
+                    this.handleTrades(normalTrades);
+                }
+
+                // Handle aggregated whale trades — notify + update UI
+                aggTrades.forEach(agg => {
+                    const coin = agg.coin || this.currentCoin;
+                    const d = this.getCoinData(coin);
+                    const isBuy = agg.side === 'BUY';
+                    const value = agg.value || 0;
+                    const fills = agg.agg || 0;
+                    const exch = agg.exchange || '??';
+                    const price = agg.price || 0;
+                    const size = agg.size || 0;
+
+                    // Add to whale trades for rendering
+                    d.whaleTrades.unshift({
+                        time: agg.time, side: agg.side,
+                        price, size, value, coin,
+                        exchange: exch, agg: fills,
+                        is_mega: agg.is_mega, mega_type: agg.mega_type,
+                    });
+                    if (d.whaleTrades.length > 500) d.whaleTrades = d.whaleTrades.slice(0, 500);
+
+                    // Update volume accumulators
+                    if (isBuy) {
+                        d.totalBuyVolume += value;
+                        d.buyCount++;
+                        d.currentBuyVolume += value;
+                        d.currentBuyCount++;
+                    } else {
+                        d.totalSellVolume += value;
+                        d.sellCount++;
+                        d.currentSellVolume += value;
+                        d.currentSellCount++;
+                    }
+
+                    // Fire notification
+                    const sideEmoji = isBuy ? '🟢' : '🔴';
+                    const valStr = value >= 1e6 ? `$${(value/1e6).toFixed(2)}M` : `$${(value/1e3).toFixed(0)}K`;
+                    const toastMsg = `⚡ AGG ${sideEmoji} ${coin} ${agg.side} ${valStr} (${fills} fills) on ${exch}`;
+
+                    if (this._canNotify(`agg_${coin}`, 30000)) {
+                        this.sendAlert(toastMsg, {
+                            desktopTitle: `⚡ Aggregated Whale — ${coin}`,
+                            desktopBody: `${agg.side} ${valStr} from ${fills} fills on ${exch} @ $${price.toLocaleString()}`,
+                            toastClass: 'agg-toast'
+                        });
+                    }
+                });
+
+                // Re-render if any agg trades hit current coin
+                if (aggTrades.some(t => (t.coin || this.currentCoin) === this.currentCoin)) {
+                    this.loadCoinData(this.currentCoin);
+                    this.updateSummaryCards();
+                    if (!this._renderTradesPending) {
+                        this._renderTradesPending = true;
+                        requestAnimationFrame(() => {
+                            this.renderTradesList();
+                            this._renderTradesPending = false;
+                        });
+                    }
+                }
+
                 this.updateSystemPanel();
                 break;
             }
@@ -2268,9 +2341,9 @@ class WhaleFlowDashboard {
         return true;
     }
 
-    sendAlert(message, { desktopTitle, desktopBody } = {}) {
+    sendAlert(message, { desktopTitle, desktopBody, toastClass } = {}) {
         // Always show in-app toast
-        this.showToast(message);
+        this.showToast(message, toastClass || '');
 
         // Desktop notification if enabled + permission granted
         if (this.desktopNotificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
@@ -2536,15 +2609,56 @@ class WhaleFlowDashboard {
         this.updateSystemPanel();
         this._setupSystemPanelToggle();
 
-        // Load log buffer
-        if (state.log_buffer && Array.isArray(state.log_buffer)) {
-            this._logEntries = state.log_buffer;
-            this._renderLogSidebar();
+        // Do NOT load historical log_buffer — old errors/warnings must not reappear after refresh.
+        // Instead, generate fresh INFO logs about current session status.
+        this._logEntries = [];
+
+        // Generate exchange connection info
+        const exchStatus = state.exchange_status || {};
+        const connected = [];
+        const disconnected = [];
+        Object.entries(exchStatus).forEach(([code, info]) => {
+            if (info && info.connected) {
+                connected.push(code);
+            } else {
+                disconnected.push(code);
+            }
+        });
+        const now = Date.now() / 1000;
+        const nowShort = new Date().toLocaleTimeString('en-US', { hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        if (connected.length > 0) {
+            this._logEntries.push({
+                timestamp: now, timeShort: nowShort, level: 'INFO',
+                msg: `Connected exchanges: ${connected.join(', ')} (${connected.length}/${connected.length + disconnected.length})`
+            });
         }
+        if (disconnected.length > 0) {
+            this._logEntries.push({
+                timestamp: now, timeShort: nowShort, level: 'INFO',
+                msg: `Disconnected: ${disconnected.join(', ')}`
+            });
+        }
+
+        // Snapshot / uptime info
+        const tradeCount = Object.values(state.coins).reduce((s, c) => s + (c.whale_trades ? c.whale_trades.length : 0), 0);
+        const uptimeMin = Math.round((state.uptime_seconds || 0) / 60);
+        if (state.snapshot_loaded) {
+            this._logEntries.push({
+                timestamp: now, timeShort: nowShort, level: 'INFO',
+                msg: `Snapshot loaded: ${tradeCount} whale trades (uptime ${uptimeMin}min)`
+            });
+        } else {
+            this._logEntries.push({
+                timestamp: now, timeShort: nowShort, level: 'INFO',
+                msg: `Fresh session started (no snapshot) — uptime ${uptimeMin}min`
+            });
+        }
+
+        this._renderLogSidebar();
         this._setupLogSidebar();
 
-        const tradeCount = Object.values(state.coins).reduce((s, c) => s + (c.whale_trades ? c.whale_trades.length : 0), 0);
-        this.showToast(`📦 Loaded ${tradeCount} whale trades from server (${Math.round(state.uptime_seconds / 60)}min uptime)`);
+        this.showToast(`📦 Loaded ${tradeCount} whale trades from server (${uptimeMin}min uptime)`);
     }
 
     // ==================== REVERSAL RADAR ENGINE ====================
@@ -2870,16 +2984,17 @@ class WhaleFlowDashboard {
 
     // ==================== TOAST NOTIFICATIONS ====================
 
-    showToast(message) {
+    showToast(message, extraClass = '') {
         const existing = document.querySelector('.toast');
         if (existing) existing.remove();
 
         const toast = document.createElement('div');
-        toast.className = 'toast';
+        toast.className = 'toast' + (extraClass ? ` ${extraClass}` : '');
         toast.textContent = message;
         document.body.appendChild(toast);
 
-        setTimeout(() => toast.remove(), 4000);
+        const duration = extraClass === 'agg-toast' ? 5000 : 4000;
+        setTimeout(() => toast.remove(), duration);
     }
 
     // ==================== SYSTEM PANEL ====================

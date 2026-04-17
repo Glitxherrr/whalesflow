@@ -2451,6 +2451,18 @@ body {
     }
 }
 
+.toast.agg-toast {
+    border: 1px solid rgba(130, 100, 255, 0.5);
+    border-left: 3px solid rgba(130, 100, 255, 0.9);
+    box-shadow: 0 8px 32px rgba(100, 80, 220, 0.25), 0 0 12px rgba(130, 100, 255, 0.15);
+    animation: toastIn 0.4s ease, aggPulse 2s ease-in-out 1, toastOut 0.4s ease 4.6s forwards;
+}
+
+@keyframes aggPulse {
+    0%, 100% { box-shadow: 0 8px 32px rgba(100, 80, 220, 0.25); }
+    50% { box-shadow: 0 8px 32px rgba(100, 80, 220, 0.5), 0 0 20px rgba(130, 100, 255, 0.3); }
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 1400px) {
     .summary-section {
