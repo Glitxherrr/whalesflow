@@ -4,6 +4,7 @@ WhaleFlow Persistent Data Collector v3
 Runs as background daemon Ã¢â‚¬â€ collects continuously even when no user is viewing.
 """
 
+import copy
 import threading
 import json
 import time
@@ -302,7 +303,8 @@ async def websocket_endpoint(websocket: WebSocket):
                             collector.data[c]['current_sell_count'] = 0
                             collector.data[c]['current_since'] = time.time() * 1000
                         logger.info("Current accumulation cleared by user")
-                        collector._save_snapshot()
+                    # Save OUTSIDE the lock — _save_snapshot -> get_state re-acquires it
+                    collector._save_snapshot()
                 elif data.get('method') == 'set_threshold':
                     coin = data.get('coin')
                     val = data.get('value')
@@ -530,11 +532,11 @@ class HyperliquidCollector:
                 os.makedirs(snap_dir, exist_ok=True)
             tmp_path = CONFIG['snapshot_path'] + '.tmp'
             with open(tmp_path, 'w', encoding='utf-8') as f:
-                json.dump(state, f)
+                json.dump(state, f, default=str)  # default=str prevents crashes on non-serializable types
             os.replace(tmp_path, CONFIG['snapshot_path'])
             logger.info(f"Snapshot saved to {CONFIG['snapshot_path']}")
-        except Exception:
-            logger.exception("Failed to save snapshot")
+        except Exception as e:
+            logger.exception(f"Failed to save snapshot ({type(e).__name__}: {e})")
 
     def _load_snapshot(self):
         path = CONFIG['snapshot_path']
@@ -1977,7 +1979,7 @@ class HyperliquidCollector:
                     'day_volume': d['day_volume'],
                     'last_trade_price': d['last_trade_price'],
                     'pressure_history': list(d['pressure_history']),
-                    'signals': d['signals'],
+                    'signals': copy.deepcopy(d['signals']),
                     'alert_level': d['alert_level'],
                     'alert_label': d['alert_label'],
                     'current_bucket_buy': d['current_bucket_buy'],
@@ -1986,16 +1988,16 @@ class HyperliquidCollector:
                         'snapshots_count': len(d['abs_snapshots']),
                         'detected': d['abs_detected'],
                         'side': d['abs_side'],
-                        'conditions': d['abs_conditions'],
+                        'conditions': dict(d['abs_conditions']),
                         'conditions_met': d['abs_conditions_met'],
-                        'metrics': d['abs_metrics'],
+                        'metrics': dict(d['abs_metrics']),
                         'cum_buy': d['abs_cum_buy'],
                         'cum_sell': d['abs_cum_sell'],
                         'snapshots': list(d['abs_snapshots']),
                     },
                     'volume_buckets': list(d['volume_buckets']),
-                    'whale_buckets': [dict(b) for b in d['whale_buckets']],
-                    'regime': d['regime'],
+                    'whale_buckets': [dict(b) for b in list(d['whale_buckets'])],
+                    'regime': copy.deepcopy(d['regime']),
                 }
             return state
 

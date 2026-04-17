@@ -2819,6 +2819,16 @@ body {
     flex-shrink: 0;
 }
 
+.exch-type {
+    font-size: 0.6rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.3px;
+}
+
 .exch-item.connected .exch-dot {
     background: var(--buy-primary);
     box-shadow: 0 0 6px var(--buy-glow);
