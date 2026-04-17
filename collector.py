@@ -451,7 +451,7 @@ class HyperliquidCollector:
             'alert_label': 'Quiet',
             'regime': {
                 'score': 50,
-                'label': 'ANALYZINGâ€¦',
+                'label': 'ANALYZING...',
                 'css_class': '',
                 'last_change_time': 0.0,
                 'price_history': [],

@@ -1227,23 +1227,33 @@ class WhaleFlowDashboard {
 
         const rawScore = rangeScore + volumeScore + cvdScore + balanceScore;
         const currentLabel = rg.label;
-        const holdMinMs = 900000;
+        const holdMinMs = 900000; // 15 min hold
         const timeSinceChange = now - rg.lastChangeTime;
         const canChange = rg.lastChangeTime === 0 || timeSinceChange >= holdMinMs;
 
+        // Match backend thresholds exactly
         let newLabel, newClass;
-        if (rawScore >= 60) { newLabel = 'TRENDING'; newClass = 'trending'; }
-        else if (rawScore >= 40) { newLabel = 'TRANSITION'; newClass = 'transition'; }
-        else { newLabel = 'CHOPPY'; newClass = 'choppy'; }
+        if (rawScore >= 60) { newLabel = '🟢 TRENDING'; newClass = 'trending'; }
+        else if (rawScore >= 30) { newLabel = '🟡 CHOPPY'; newClass = 'choppy'; }
+        else { newLabel = '🔴 SIDEWAYS'; newClass = 'sideways'; }
 
         const isWarmup = rg.priceHistory.length < 8;
         if (isWarmup) {
             rg.label = 'ANALYZING...';
             rg.cssClass = '';
-        } else if ((newLabel !== currentLabel || rg.cssClass !== newClass) && canChange) {
-            rg.label = newLabel;
-            rg.cssClass = newClass;
-            rg.lastChangeTime = now;
+        } else if (canChange) {
+            // Hysteresis: require stronger score to change (matches backend)
+            const shouldChange = (
+                (newClass === 'trending' && rawScore >= 65) ||
+                (newClass === 'sideways' && rawScore <= 25) ||
+                (newClass === 'choppy' && rawScore >= 35 && rawScore <= 55) ||
+                currentLabel.includes('ANALYZING')
+            );
+            if (shouldChange && newLabel !== currentLabel) {
+                rg.label = newLabel;
+                rg.cssClass = newClass;
+                rg.lastChangeTime = now;
+            }
         }
 
         rg.score = rawScore;
