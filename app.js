@@ -16,7 +16,8 @@ class WhaleFlowDashboard {
         // State
         this.ws = null;
         this.currentCoin = 'BTC';
-        this.whaleThreshold = 50000;
+        this._defaultThresholds = { BTC: 50000, ETH: 10000, PAXG: 10, XRP: 50, SOL: 100 };
+        this.whaleThreshold = this._loadThreshold('BTC');
         this.orderbook = { bids: [], asks: [] };
         this.fundingData = null;
         this.assetIndex = -1;
@@ -56,6 +57,12 @@ class WhaleFlowDashboard {
         // DOM cache
         this.elements = {};
         this.cacheElements();
+
+        // Sync threshold input with saved value
+        if (this.elements.whaleThreshold) {
+            this.elements.whaleThreshold.value = this.whaleThreshold;
+            this.elements.whaleThreshold.min = '1';
+        }
 
         // Init
         this.renderCoinSelector();
@@ -228,6 +235,21 @@ class WhaleFlowDashboard {
         } catch(e) {}
     }
 
+    _saveThreshold(coin, value) {
+        try { localStorage.setItem(`whaleflow_thresh_${coin}`, String(value)); } catch(e) {}
+    }
+
+    _loadThreshold(coin) {
+        try {
+            const saved = localStorage.getItem(`whaleflow_thresh_${coin}`);
+            if (saved) {
+                const val = parseInt(saved, 10);
+                if (val >= 1) return val;
+            }
+        } catch(e) {}
+        return this._defaultThresholds[coin] || 100;
+    }
+
     // ==================== DOM CACHING ====================
 
     cacheElements() {
@@ -327,8 +349,9 @@ class WhaleFlowDashboard {
         // Whale threshold
         this.elements.whaleThreshold.addEventListener('change', (e) => {
             const val = parseInt(e.target.value, 10);
-            if (val >= 1000) {
+            if (val >= 1) {
                 this.whaleThreshold = val;
+                this._saveThreshold(this.currentCoin, val);
                 this.reprocessTrades();
                 this.renderOrderbook();
                 this.showToast(`🐋 Whale threshold set to $${this.formatCompact(val)}`);
@@ -585,19 +608,8 @@ class WhaleFlowDashboard {
 
         this.currentCoin = newCoin;
 
-        // Set coin-specific thresholds
-        if (newCoin === 'BTC') {
-            this.whaleThreshold = 50000;
-        } else if (newCoin === 'ETH') {
-            this.whaleThreshold = 10000;
-        } else if (newCoin === 'PAXG') {
-            this.whaleThreshold = 10;
-        } else if (newCoin === 'XRP') {
-            this.whaleThreshold = 50;
-        } else {
-            // SOL
-            this.whaleThreshold = 100;
-        }
+        // Load saved threshold (falls back to per-coin defaults)
+        this.whaleThreshold = this._loadThreshold(newCoin);
         if (this.elements.whaleThreshold) {
             this.elements.whaleThreshold.value = this.whaleThreshold;
         }
@@ -1270,14 +1282,16 @@ class WhaleFlowDashboard {
                 };
 
                 this._applyCoinMeta(coin, coinMeta, now);
+
+                // Record funding history for ALL coins (not just current)
+                const fundingStore = this.getCoinData(coin);
+                fundingStore.fundingHistory.push({ time: now, funding: coinMeta.funding });
+                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
             });
 
             const activeMeta = this.allCoinMeta.get(this.currentCoin);
             if (activeMeta) {
                 this.fundingData = { ...activeMeta };
-                const fundingStore = this.getCoinData(this.currentCoin);
-                fundingStore.fundingHistory.push({ time: now, funding: activeMeta.funding });
-                if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
                 this.updateFundingUI();
                 this.updateMarketDataUI();
                 this.renderRegime();
@@ -1812,7 +1826,7 @@ class WhaleFlowDashboard {
             el.innerHTML = `&uarr; ${label} +${formatted(changeValue)}`;
         } else {
             el.classList.add('down');
-            el.innerHTML = `&darr; ${label} ${formatted(Math.abs(changeValue))}`;
+            el.innerHTML = `&darr; ${label} -${formatted(Math.abs(changeValue))}`;
         }
     }
 
@@ -2597,6 +2611,19 @@ class WhaleFlowDashboard {
 
         // Load current coin's data into display copies
         this.loadCoinData(this.currentCoin);
+
+        // Populate allCoinMeta for ALL coins so coin switching works immediately
+        Object.entries(state.coins).forEach(([coin, sc]) => {
+            if (sc.mark_px) {
+                this.allCoinMeta.set(coin, {
+                    funding: sc.funding,
+                    openInterest: sc.open_interest,
+                    markPx: sc.mark_px,
+                    oraclePx: sc.oracle_px,
+                    dayNtlVlm: sc.day_volume,
+                });
+            }
+        });
 
         // Set funding data for current coin
         const activeCoin = state.coins[this.currentCoin];
