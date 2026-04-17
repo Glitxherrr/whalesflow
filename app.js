@@ -1981,13 +1981,14 @@ class WhaleFlowDashboard {
             const isMega = trade.value >= this.whaleThreshold * 5;
             const timeStr = this.formatTime(trade.time);
             const exch = trade.exchange || 'HL';
+            const aggLabel = trade.agg ? ` ×${trade.agg}` : '';
 
-            return `<div class="trade-row ${isBuy ? 'buy-trade' : 'sell-trade'}${isMega ? ' mega-whale' : ''}">
+            return `<div class="trade-row ${isBuy ? 'buy-trade' : 'sell-trade'}${isMega ? ' mega-whale' : ''}${trade.agg ? ' agg-trade' : ''}">
                 <span class="trade-time">${timeStr}</span>
                 <span class="trade-side">${trade.side}</span>
                 <span class="trade-price">${this.formatPrice(trade.price)}</span>
                 <span class="trade-size">${this.formatSize(trade.size)}</span>
-                <span class="trade-exch">[${exch}]</span>
+                <span class="trade-exch">[${exch}${aggLabel}]</span>
                 <span class="trade-value">$${this.formatCompact(trade.value)}</span>
             </div>`;
         }).join('');

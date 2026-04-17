@@ -1439,6 +1439,15 @@ body {
     opacity: 0.7;
 }
 
+.trade-row.agg-trade {
+    border-left: 2px solid rgba(130, 130, 255, 0.35);
+}
+
+.trade-row.agg-trade .trade-exch {
+    color: rgba(160, 160, 255, 0.85);
+    opacity: 1;
+}
+
 .trade-row .trade-value {
     font-weight: 600;
     text-align: right;

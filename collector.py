@@ -171,6 +171,10 @@ CONFIG = {
     'signal_decay_clustering': 180,
     'clustering_window_ms': 60000,
     'clustering_min_trades': 5,
+    'agg_window_ms': 1500,          # Aggregation time window (ms)
+    'agg_min_value': 200,           # Min individual trade value ($) to buffer
+    'agg_max_entries': 50000,       # Safety cap for buffer size
+    'agg_flush_interval': 1.0,     # Flush frequency (seconds)
     'funding_extreme_threshold': 0.005,
     'absorption_imbalance_min': 60,
     'absorption_vol_min': 50000,
@@ -391,6 +395,11 @@ class HyperliquidCollector:
         # Log throttling
         self._last_warn_time = {}
 
+        # Trade aggregation buffer for detecting whales in fragmented fills
+        self._agg_lock = threading.Lock()
+        self._agg_buffer: Dict[tuple, deque] = {}
+        self._agg_entry_count = 0
+
         # Load previous snapshot
         self._load_snapshot()
 
@@ -486,6 +495,7 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_snapshots, daemon=True).start()
         threading.Thread(target=self._run_pressure, daemon=True).start()
         threading.Thread(target=self._run_persist, daemon=True).start()
+        threading.Thread(target=self._run_aggregator, daemon=True).start()
         
         # Streamlit mode disables the embedded FastAPI server and only uses state injection.
         if self.enable_local_server:
@@ -1131,6 +1141,9 @@ class HyperliquidCollector:
 
         self.last_trade_update = time.time()
 
+        # Collect sub-threshold trades INSIDE the lock, buffer OUTSIDE to avoid deadlock
+        below_threshold = []
+
         with self._data_lock:
             for trade in valid_trades:
                 coin = trade.get('coin', 'BTC')
@@ -1216,6 +1229,13 @@ class HyperliquidCollector:
                         d['current_sell_count'] += 1
 
                     self._check_clustering(coin)
+                elif value >= CONFIG['agg_min_value']:
+                    # Below whale threshold but meaningful — buffer for aggregation
+                    below_threshold.append((exchange, coin, trade['side'], trade_time, price, size, value))
+
+        # Buffer sub-threshold trades OUTSIDE _data_lock (avoids deadlock with _agg_lock)
+        for args in below_threshold:
+            self._agg_add(*args)
 
     def _check_clustering(self, coin):
         """5+ same-side whale trades within 60 seconds = clustering."""
@@ -1258,6 +1278,146 @@ class HyperliquidCollector:
                     'value': total_val, 'coin': coin,
                     'mega_type': 'clustering', 'cluster_count': count, 'exchange': 'MIX'
                 })
+
+    # ==================== TRADE AGGREGATION ENGINE ====================
+
+    def _agg_add(self, exchange, coin, side, time_ms, price, size, value):
+        """Buffer a sub-threshold trade for aggregation detection."""
+        key = (exchange, coin, side)
+        with self._agg_lock:
+            if self._agg_entry_count >= CONFIG['agg_max_entries']:
+                return  # Safety cap — silently drop to prevent memory growth
+            if key not in self._agg_buffer:
+                self._agg_buffer[key] = deque()
+            self._agg_buffer[key].append((time_ms, price, size, value))
+            self._agg_entry_count += 1
+
+    def _run_aggregator(self):
+        """Daemon thread: flush aggregation buffer periodically to detect hidden whale activity."""
+        time.sleep(10)  # Let collector warm up
+        while self.running:
+            try:
+                self._flush_aggregation()
+            except Exception as e:
+                logger.error(f"Aggregator flush error: {e}")
+            time.sleep(CONFIG['agg_flush_interval'])
+
+    def _flush_aggregation(self):
+        """Drain expired buffer entries and create whale trades for groups crossing threshold."""
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - CONFIG['agg_window_ms']
+
+        # --- Phase 1: Drain expired entries from buffer (under _agg_lock only) ---
+        to_process = {}
+        with self._agg_lock:
+            keys_to_delete = []
+            for key, entries in self._agg_buffer.items():
+                expired = []
+                while entries and entries[0][0] <= cutoff:
+                    expired.append(entries.popleft())
+                    self._agg_entry_count -= 1
+                if expired:
+                    to_process[key] = expired
+                if not entries:
+                    keys_to_delete.append(key)
+            for k in keys_to_delete:
+                del self._agg_buffer[k]
+
+        if not to_process:
+            return
+
+        # --- Phase 2: Evaluate aggregated groups (under _data_lock) ---
+        whale_broadcasts = []
+        with self._data_lock:
+            for (exchange, coin, side), entries in to_process.items():
+                if coin not in self.data:
+                    continue
+
+                total_value = sum(e[3] for e in entries)
+                coin_threshold = self.whale_thresholds.get(coin, 50)
+
+                if total_value < coin_threshold:
+                    continue  # Combined value still below threshold — discard
+
+                # --- Aggregated whale detected ---
+                total_size = sum(e[2] for e in entries)
+                vwap = total_value / total_size if total_size > 0 else entries[-1][1]
+                latest_time = max(e[0] for e in entries)
+                is_buy = side == 'B'
+                fill_count = len(entries)
+                d = self.data[coin]
+
+                # Whale bucket tracking (1-minute resolution)
+                minute_ts = (latest_time // 60000) * 60000
+                if not d['whale_buckets']:
+                    d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
+                latest_bucket = d['whale_buckets'][-1]
+                if minute_ts > latest_bucket['time']:
+                    d['whale_buckets'].append({'time': minute_ts, 'buy': 0.0, 'sell': 0.0, 'buy_count': 0, 'sell_count': 0})
+                    latest_bucket = d['whale_buckets'][-1]
+                if minute_ts == latest_bucket['time']:
+                    if is_buy:
+                        latest_bucket['buy'] += total_value
+                        latest_bucket['buy_count'] += 1
+                    else:
+                        latest_bucket['sell'] += total_value
+                        latest_bucket['sell_count'] += 1
+
+                # Mega whale initiative check
+                is_mega = False
+                mega_type = None
+                mega_thresh = self.mega_thresholds.get(coin, 1000000)
+                if total_value >= mega_thresh:
+                    is_mega = True
+                    mega_type = 'initiative'
+                    side_label = 'bullish' if is_buy else 'bearish'
+                    d['signals']['initiative'] = {
+                        'active': True, 'side': side_label,
+                        'detail': f"AGG {'BUY' if is_buy else 'SELL'} ${total_value/1e6:.2f}M ({fill_count} fills) @ {vwap:,.1f}",
+                        'time': time.time(),
+                    }
+                    d['mega_whales'].appendleft({
+                        'time': latest_time, 'side': 'BUY' if is_buy else 'SELL',
+                        'price': vwap, 'size': total_size, 'value': total_value,
+                        'coin': coin, 'mega_type': 'initiative', 'exchange': exchange
+                    })
+
+                whale_entry = {
+                    'time': latest_time, 'side': 'BUY' if is_buy else 'SELL',
+                    'price': vwap, 'size': total_size, 'value': total_value, 'coin': coin,
+                    'is_mega': is_mega, 'mega_type': mega_type,
+                    'exchange': exchange, 'agg': fill_count,
+                }
+                d['whale_trades'].appendleft(whale_entry)
+                whale_broadcasts.append(whale_entry)
+
+                if is_buy:
+                    d['total_buy_vol'] += total_value
+                    d['buy_count'] += 1
+                    d['current_buy_vol'] += total_value
+                    d['current_buy_count'] += 1
+                else:
+                    d['total_sell_vol'] += total_value
+                    d['sell_count'] += 1
+                    d['current_sell_vol'] += total_value
+                    d['current_sell_count'] += 1
+
+                self._check_clustering(coin)
+
+                logger.info(
+                    f"⚡ Aggregated whale: {coin} {'BUY' if is_buy else 'SELL'} "
+                    f"${total_value:,.0f} ({fill_count} fills) on {exchange} VWAP ${vwap:,.2f}"
+                )
+
+        # --- Phase 3: Broadcast outside locks ---
+        if whale_broadcasts and self.local_loop and self.local_clients:
+            try:
+                msg = json.dumps({'channel': 'trades', 'data': whale_broadcasts}, default=str)
+                asyncio.run_coroutine_threadsafe(
+                    self._broadcast_local(msg), self.local_loop
+                )
+            except Exception:
+                pass  # Non-critical — don't let broadcast failure crash aggregator
 
     # ==================== FUNDING / OI POLLER ====================
 
