@@ -125,6 +125,14 @@ class WhaleFlowDashboard {
             pressureHistory: [],
             lastPressureSnapshot: { buys: 0, sells: 0 },
 
+            // Funding smoothing state
+            // fundingEma: running EMA of raw incoming rates (alpha=0.15 ≈ 12-period)
+            // prevFundingDisplayed: last rate actually rendered in the UI
+            // fundingLastRenderMs: timestamp of last UI render (for throttle)
+            fundingEma: 0,
+            prevFundingDisplayed: null,
+            fundingLastRenderMs: 0,
+
             // Hourly absorption accumulator
             abs: {
                 cumBuyVol: 0,
@@ -935,20 +943,28 @@ class WhaleFlowDashboard {
         if (!data || !data.coins) return;
 
         const now = (data.timestamp || (Date.now() / 1000)) * 1000;
+        const ALPHA = 0.15; // must match backend alpha for layered smoothing
         Object.entries(data.coins).forEach(([coin, info]) => {
+            const rawFunding = parseFloat(info.funding || 0);
+            const fundingStore = this.getCoinData(coin);
+
+            // Client-side EMA on top of backend EMA — double-smooth for stability
+            if (fundingStore.fundingEma === 0 && rawFunding !== 0) {
+                fundingStore.fundingEma = rawFunding; // seed
+            } else {
+                fundingStore.fundingEma = ALPHA * rawFunding + (1 - ALPHA) * fundingStore.fundingEma;
+            }
+
             const meta = {
-                funding: parseFloat(info.funding || 0),
+                funding: fundingStore.fundingEma, // use smoothed value
                 openInterest: parseFloat(info.open_interest || 0),
                 markPx: parseFloat(info.mark_px || 0),
                 oraclePx: parseFloat(info.oracle_px || 0),
                 dayNtlVlm: parseFloat(info.day_volume || 0),
             };
             this._applyCoinMeta(coin, meta, now);
-            const fundingStore = this.getCoinData(coin);
-            fundingStore.fundingHistory.push({
-                time: now,
-                funding: meta.funding,
-            });
+            // Record RAW value in history so 1h/4h/24h deltas track real market movement
+            fundingStore.fundingHistory.push({ time: now, funding: rawFunding });
             if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
         });
 
@@ -1277,13 +1293,24 @@ class WhaleFlowDashboard {
             const universe = meta.universe || [];
             const now = Date.now();
 
+            const ALPHA = 0.15;
             this.coinList.forEach(coin => {
                 const i = universe.findIndex(u => u.name === coin);
                 if (i === -1 || !contexts[i]) return;
 
                 const ctx = contexts[i];
+                const rawFunding = parseFloat(ctx.funding || '0');
+                const fundingStore = this.getCoinData(coin);
+
+                // Apply client-side EMA to the raw funding rate
+                if (fundingStore.fundingEma === 0 && rawFunding !== 0) {
+                    fundingStore.fundingEma = rawFunding;
+                } else {
+                    fundingStore.fundingEma = ALPHA * rawFunding + (1 - ALPHA) * fundingStore.fundingEma;
+                }
+
                 const coinMeta = {
-                    funding: parseFloat(ctx.funding || '0'),
+                    funding: fundingStore.fundingEma,  // smoothed
                     openInterest: parseFloat(ctx.openInterest || '0'),
                     markPx: parseFloat(ctx.markPx || '0'),
                     oraclePx: parseFloat(ctx.oraclePx || '0'),
@@ -1293,9 +1320,8 @@ class WhaleFlowDashboard {
 
                 this._applyCoinMeta(coin, coinMeta, now);
 
-                // Record funding history for ALL coins (not just current)
-                const fundingStore = this.getCoinData(coin);
-                fundingStore.fundingHistory.push({ time: now, funding: coinMeta.funding });
+                // Record RAW funding in history (not EMA) so change deltas are accurate
+                fundingStore.fundingHistory.push({ time: now, funding: rawFunding });
                 if (fundingStore.fundingHistory.length > 300) fundingStore.fundingHistory = fundingStore.fundingHistory.slice(-300);
             });
 
@@ -1840,9 +1866,57 @@ class WhaleFlowDashboard {
         }
     }
 
+    /**
+     * Compute the rolling median of up to N recent funding history entries.
+     * This acts as a non-linear smoother that rejects brief spikes.
+     */
+    _fundingMedian(history, n = 7) {
+        if (!history || history.length === 0) return null;
+        const slice = history.slice(-n).map(h => h.funding).filter(v => Number.isFinite(v));
+        if (slice.length === 0) return null;
+        slice.sort((a, b) => a - b);
+        const mid = Math.floor(slice.length / 2);
+        return slice.length % 2 !== 0 ? slice[mid] : (slice[mid - 1] + slice[mid]) / 2;
+    }
+
     updateFundingUI() {
         if (!this.fundingData) return;
-        const rate = this.fundingData.funding;
+
+        const coin = this.currentCoin;
+        const d = this.getCoinData(coin);
+        const now = Date.now();
+
+        // ---- Throttle: skip render if called more than once per 10 seconds ----
+        // Exception: always allow if prevFundingDisplayed is null (first render)
+        const RENDER_THROTTLE_MS = 10000;
+        if (d.prevFundingDisplayed !== null && (now - d.fundingLastRenderMs) < RENDER_THROTTLE_MS) {
+            return;
+        }
+
+        // ---- Use rolling median of recent raw history entries for display ----
+        // The fundingData.funding is already EMA-smoothed. We compute the median
+        // of the last 7 raw history points as an additional stabiliser.
+        const validHistory = (d.fundingHistory || []).filter(h => h && h.time && Number.isFinite(h.funding));
+        const medianRaw = this._fundingMedian(validHistory, 7);
+        // If we have enough history, prefer the median; fall back to EMA otherwise.
+        const rate = (medianRaw !== null && validHistory.length >= 3)
+            ? medianRaw
+            : (this.fundingData.funding || 0);
+
+        // ---- Display-change guard: skip render if rate hasn't moved meaningfully ----
+        // Threshold: 0.000001 in rate units = 0.0001% — below this is just noise.
+        const DISPLAY_THRESHOLD = 0.000001;
+        if (
+            d.prevFundingDisplayed !== null &&
+            Math.abs(rate - d.prevFundingDisplayed) < DISPLAY_THRESHOLD
+        ) {
+            return; // Value hasn't moved enough to bother re-rendering
+        }
+
+        // ---- Proceed with full render ----
+        d.prevFundingDisplayed = rate;
+        d.fundingLastRenderMs = now;
+
         const direction = this.elements.fundingDirection;
         const rateEl = this.elements.fundingRate;
         const hourlyEl = this.elements.fundingHourlyChange;
@@ -1869,16 +1943,14 @@ class WhaleFlowDashboard {
             currentState = 'neutral';
         }
 
-        const coin = this.currentCoin;
-        const d = this.getCoinData(coin);
         if (d.prevFundingState !== undefined && d.prevFundingState !== currentState) {
             if (currentState === 'positive' && this._canNotify(`${coin}_funding_flip_pos`, 90000)) {
-                this.sendAlert(`Funding Flipped Positive (+5) on ${coin}`, {
+                this.sendAlert(`Funding Flipped Positive on ${coin}`, {
                     desktopTitle: `Funding Flip - ${coin}`,
                     desktopBody: `Funding rate turned positive (${(rate*100).toFixed(4)}%). Longs are now paying shorts.`
                 });
             } else if (currentState === 'negative' && this._canNotify(`${coin}_funding_flip_neg`, 90000)) {
-                this.sendAlert(`Funding Flipped Negative (-5) on ${coin}`, {
+                this.sendAlert(`Funding Flipped Negative on ${coin}`, {
                     desktopTitle: `Funding Flip - ${coin}`,
                     desktopBody: `Funding rate turned negative (${(rate*100).toFixed(4)}%). Shorts are now paying longs.`
                 });
@@ -1886,8 +1958,7 @@ class WhaleFlowDashboard {
         }
         d.prevFundingState = currentState;
 
-        const now = Date.now();
-        const history = (d.fundingHistory || []).filter(h => h && h.time && Number.isFinite(h.funding));
+        const history = validHistory;
         const hourBase = this._getDeltaBase(history, now - 3600000, 10 * 60 * 1000);
         const fourHourBase = this._getDeltaBase(history, now - 14400000, 30 * 60 * 1000);
         const dayBase = this._getDeltaBase(history, now - 86400000, 90 * 60 * 1000);

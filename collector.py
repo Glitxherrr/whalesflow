@@ -378,6 +378,11 @@ class HyperliquidCollector:
         self.last_trade_update = 0
         self.snapshot_loaded = False
 
+        # Per-coin EMA state for funding smoothing (alpha=0.15 ≈ 12-period EMA)
+        # A slower alpha means stronger smoothing — equivalent to a high-TF indicator.
+        self._funding_ema: Dict[str, float] = {coin: 0.0 for coin in CONFIG['coins']}
+        self._funding_ema_alpha = 0.15
+
         # Trade deduplication
         self._dedupe_lock = threading.Lock()
         self._dedupe_set = set()
@@ -1449,6 +1454,7 @@ class HyperliquidCollector:
         universe = data[0]['universe']
         contexts = data[1] if isinstance(data[1], list) else []
 
+        alpha = self._funding_ema_alpha
         with self._data_lock:
             for coin in self.coins:
                 idx = next((i for i, u in enumerate(universe) if u['name'] == coin), -1)
@@ -1456,12 +1462,27 @@ class HyperliquidCollector:
                     continue
                 ctx = contexts[idx]
                 d = self.data[coin]
-                d['funding'] = float(ctx.get('funding', '0'))
+
+                raw_funding = float(ctx.get('funding', '0'))
+
+                # Apply EMA smoothing so UI shows a stable high-TF signal.
+                # Bootstrap the EMA with the first real value received.
+                prev_ema = self._funding_ema.get(coin, 0.0)
+                if prev_ema == 0.0 and raw_funding != 0.0:
+                    # First real sample — seed EMA directly
+                    smoothed = raw_funding
+                else:
+                    smoothed = alpha * raw_funding + (1.0 - alpha) * prev_ema
+                self._funding_ema[coin] = smoothed
+
+                # Store smoothed value; history records raw for change-delta accuracy
+                d['funding'] = smoothed
                 d['mark_px'] = float(ctx.get('markPx', '0'))
                 d['oracle_px'] = float(ctx.get('oraclePx', '0'))
                 d['open_interest'] = float(ctx.get('openInterest', '0'))
                 d['day_volume'] = float(ctx.get('dayNtlVlm', '0'))
-                d['funding_history'].append({'time': time.time(), 'funding': d['funding']})
+                # Record RAW funding in history so 1h/4h/24h deltas reflect real changes
+                d['funding_history'].append({'time': time.time(), 'funding': raw_funding})
                 d['market_history'].append({
                     'time': time.time(),
                     'mark_px': d['mark_px'],
