@@ -160,6 +160,18 @@ class WhaleFlowDashboard {
             // Mega whales (initiative + clustering events)
             megaWhales: [],
 
+            // Mega whale dominance accumulators (initiative only)
+            megaBuyVolume: 0,
+            megaSellVolume: 0,
+            megaBuyCount: 0,
+            megaSellCount: 0,
+
+            // Cluster dominance accumulators
+            clusterBuyVolume: 0,
+            clusterSellVolume: 0,
+            clusterBuyCount: 0,
+            clusterSellCount: 0,
+
             // 8-Signal Reversal Radar
             signals: {
                 absorption:   { active: false, side: null, detail: '' },
@@ -227,7 +239,17 @@ class WhaleFlowDashboard {
                     sellVol: d.currentSellVolume || 0,
                     buyCount: d.currentBuyCount || 0,
                     sellCount: d.currentSellCount || 0,
-                    lastTime: d.lastTradeTime || this.currentModeClearTime
+                    lastTime: d.lastTradeTime || this.currentModeClearTime,
+                    // Mega whale accumulators
+                    megaBuyVol: d.megaBuyVolume || 0,
+                    megaSellVol: d.megaSellVolume || 0,
+                    megaBuyCount: d.megaBuyCount || 0,
+                    megaSellCount: d.megaSellCount || 0,
+                    // Cluster accumulators
+                    clusterBuyVol: d.clusterBuyVolume || 0,
+                    clusterSellVol: d.clusterSellVolume || 0,
+                    clusterBuyCount: d.clusterBuyCount || 0,
+                    clusterSellCount: d.clusterSellCount || 0
                 };
             });
             localStorage.setItem('whaleflow_curr_state', JSON.stringify(dataToSave));
@@ -248,6 +270,16 @@ class WhaleFlowDashboard {
                         d.currentBuyCount = saved.buyCount || 0;
                         d.currentSellCount = saved.sellCount || 0;
                         d.lastTradeTime = saved.lastTime || 0;
+                        // Restore mega whale accumulators
+                        d.megaBuyVolume = saved.megaBuyVol || 0;
+                        d.megaSellVolume = saved.megaSellVol || 0;
+                        d.megaBuyCount = saved.megaBuyCount || 0;
+                        d.megaSellCount = saved.megaSellCount || 0;
+                        // Restore cluster accumulators
+                        d.clusterBuyVolume = saved.clusterBuyVol || 0;
+                        d.clusterSellVolume = saved.clusterSellVol || 0;
+                        d.clusterBuyCount = saved.clusterBuyCount || 0;
+                        d.clusterSellCount = saved.clusterSellCount || 0;
                     }
                 });
             }
@@ -403,16 +435,7 @@ class WhaleFlowDashboard {
                 }
 
                 // Update hint text
-                const hint = document.getElementById('tfBarHint');
-                if (hint) {
-                    if (this.dataViewMode === 'Historical') {
-                        hint.textContent = 'Showing all historical data from backend';
-                    } else {
-                        hint.textContent = this.currentModeClearTime > 0
-                            ? `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`
-                            : 'Press Clear Data to start tracking from now';
-                    }
-                }
+                this._updateModeHint();
 
                 this.updateSummaryCards();
                 this.renderTradesList();
@@ -930,6 +953,26 @@ class WhaleFlowDashboard {
                     // Timeframe Dominance accumulator
                     this._tfDomAccumTrade(coin, value, isBuy);
 
+                    // Mega Whales / Clusters accumulator for backend-sourced agg trades
+                    if (agg.is_mega && agg.mega_type === 'initiative') {
+                        if (isBuy) {
+                            d.megaBuyVolume += value;
+                            d.megaBuyCount++;
+                        } else {
+                            d.megaSellVolume += value;
+                            d.megaSellCount++;
+                        }
+                        // Also add to megaWhales array for trade list display
+                        d.megaWhales.unshift({
+                            time: agg.time, side: agg.side,
+                            price, size, value, coin,
+                            mega_type: 'initiative',
+                            exchange: exch, agg: fills
+                        });
+                        if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
+                        this._needsStorageSave = true;
+                    }
+
                     // Build notification message
                     const sideEmoji = isBuy ? '🟢' : '🔴';
                     const valStr = value >= 1e6 ? `$${(value/1e6).toFixed(2)}M` : `$${(value/1e3).toFixed(0)}K`;
@@ -1121,6 +1164,17 @@ class WhaleFlowDashboard {
                         exchange: trade.exchange || 'HL'
                     });
                     if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
+
+                    // Accumulate mega whale dominance
+                    if (isBuy) {
+                        d.megaBuyVolume += value;
+                        d.megaBuyCount++;
+                    } else {
+                        d.megaSellVolume += value;
+                        d.megaSellCount++;
+                    }
+                    this._needsStorageSave = true;
+
                     if (coin === this.currentCoin) {
                         if (!this._renderMegaPending) {
                             this._renderMegaPending = true;
@@ -1157,6 +1211,17 @@ class WhaleFlowDashboard {
                             exchange: trade.exchange || 'HL'
                         });
                         if (d.megaWhales.length > 100) d.megaWhales = d.megaWhales.slice(0, 100);
+
+                        // Accumulate cluster dominance
+                        if (isBuy) {
+                            d.clusterBuyVolume += clusterVal;
+                            d.clusterBuyCount++;
+                        } else {
+                            d.clusterSellVolume += clusterVal;
+                            d.clusterSellCount++;
+                        }
+                        this._needsStorageSave = true;
+
                         if (coin === this.currentCoin) {
                             if (!this._renderMegaPending) {
                                 this._renderMegaPending = true;
@@ -2373,7 +2438,7 @@ class WhaleFlowDashboard {
     _loadModeFromStorage() {
         try {
             const stored = localStorage.getItem('whaleflow_dataViewMode');
-            if (stored === 'Historical' || stored === 'Current') {
+            if (['Historical', 'Current', 'MegaWhales', 'Clusters'].includes(stored)) {
                 this.dataViewMode = stored;
             }
             const clearTime = localStorage.getItem('whaleflow_clearTime');
@@ -2406,44 +2471,86 @@ class WhaleFlowDashboard {
         }
 
         // Set hint
+        this._updateModeHint();
+    }
+
+    _updateModeHint() {
         const hint = document.getElementById('tfBarHint');
-        if (hint) {
-            if (this.dataViewMode === 'Historical') {
+        if (!hint) return;
+        switch (this.dataViewMode) {
+            case 'Historical':
                 hint.textContent = 'Showing all historical data from backend';
-            } else {
+                break;
+            case 'Current':
                 hint.textContent = this.currentModeClearTime > 0
                     ? `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`
                     : 'Press Clear Data to start tracking from now';
-            }
+                break;
+            case 'MegaWhales':
+                hint.textContent = '💎 Showing only mega whale initiative trades ($M+ single fills)';
+                break;
+            case 'Clusters':
+                hint.textContent = '🦈 Showing only whale clustering events (5+ same-side burst in 60s)';
+                break;
         }
     }
 
     getDisplayTrades() {
         const d = this.getCoinData(this.currentCoin);
-        if (this.dataViewMode === 'Historical') {
-            return d.whaleTrades;
+        switch (this.dataViewMode) {
+            case 'Historical':
+                return d.whaleTrades;
+            case 'Current':
+                if (this.currentModeClearTime <= 0) return [];
+                return d.whaleTrades.filter(t => t.time >= this.currentModeClearTime);
+            case 'MegaWhales':
+                return d.megaWhales.filter(t => t.mega_type === 'initiative');
+            case 'Clusters':
+                return d.megaWhales.filter(t => t.mega_type === 'clustering');
+            default:
+                return d.whaleTrades;
         }
-        // Current mode: only trades after clearTime
-        if (this.currentModeClearTime <= 0) return [];
-        return d.whaleTrades.filter(t => t.time >= this.currentModeClearTime);
     }
 
     getDisplayVolumes() {
-        if (this.dataViewMode === 'Historical') {
-            return {
-                buyVol: this.totalBuyVolume,
-                sellVol: this.totalSellVolume,
-                buyCount: this.buyCount,
-                sellCount: this.sellCount
-            };
+        const d = this.getCoinData(this.currentCoin);
+        switch (this.dataViewMode) {
+            case 'Historical':
+                return {
+                    buyVol: this.totalBuyVolume,
+                    sellVol: this.totalSellVolume,
+                    buyCount: this.buyCount,
+                    sellCount: this.sellCount
+                };
+            case 'Current':
+                return {
+                    buyVol: this.currentBuyVolume || 0,
+                    sellVol: this.currentSellVolume || 0,
+                    buyCount: this.currentBuyCount || 0,
+                    sellCount: this.currentSellCount || 0
+                };
+            case 'MegaWhales':
+                return {
+                    buyVol: d.megaBuyVolume || 0,
+                    sellVol: d.megaSellVolume || 0,
+                    buyCount: d.megaBuyCount || 0,
+                    sellCount: d.megaSellCount || 0
+                };
+            case 'Clusters':
+                return {
+                    buyVol: d.clusterBuyVolume || 0,
+                    sellVol: d.clusterSellVolume || 0,
+                    buyCount: d.clusterBuyCount || 0,
+                    sellCount: d.clusterSellCount || 0
+                };
+            default:
+                return {
+                    buyVol: this.totalBuyVolume,
+                    sellVol: this.totalSellVolume,
+                    buyCount: this.buyCount,
+                    sellCount: this.sellCount
+                };
         }
-        // Current mode: return tracked accumulators instead of recalculating from array (which drops old trades)
-        return {
-            buyVol: this.currentBuyVolume || 0,
-            sellVol: this.currentSellVolume || 0,
-            buyCount: this.currentBuyCount || 0,
-            sellCount: this.currentSellCount || 0
-        };
     }
 
     // ==================== NOTIFICATIONS ====================

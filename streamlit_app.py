@@ -175,7 +175,7 @@ window.__SERVER_STATE__ = __SERVER_STATE_PLACEHOLDER__;
     fragment = getattr(st, "fragment", None)
     if callable(fragment):
 
-        @fragment(run_every="5s")
+        @fragment(run_every="10s")
         def live_data_pump() -> None:
             state = _get_live_state(collector)
             state_json = json.dumps(state)
@@ -195,7 +195,4 @@ try {{
         live_data_pump()
 
 
-if APP_PATH.exists():
-    runpy.run_path(str(APP_PATH), run_name="__main__")
-else:
-    run_embedded_app()
+run_embedded_app()
