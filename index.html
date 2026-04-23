@@ -81,6 +81,54 @@
         <div class="tf-bar-hint" id="tfBarHint">Showing all historical data from backend</div>
     </div>
 
+    <!-- Timeframe Dominance Tab -->
+    <div class="timeframe-bar tf-dominance-bar" id="tfDominanceBar">
+        <div class="tf-bar-label">⏱ Timeframe Dominance</div>
+        <div class="tf-bar-buttons" id="tfDominanceBtns">
+            <button class="tf-bar-btn tf-dom-btn" data-tf="1m">1M</button>
+            <button class="tf-bar-btn tf-dom-btn" data-tf="5m">5M</button>
+            <button class="tf-bar-btn tf-dom-btn" data-tf="15m">15M</button>
+            <button class="tf-bar-btn tf-dom-btn" data-tf="1h">1H</button>
+            <button class="tf-bar-btn tf-dom-btn" data-tf="4h">4H</button>
+            <button class="tf-bar-btn tf-dom-btn" data-tf="D">D</button>
+        </div>
+        <div class="tf-dom-status" id="tfDomStatus">
+            <span class="tf-dom-hint" id="tfDomHint">Select a timeframe to see auto-clearing dominance</span>
+        </div>
+    </div>
+
+    <!-- Timeframe Dominance Display (visible when a TF is active) -->
+    <div class="tf-dom-display" id="tfDomDisplay" style="display:none;">
+        <div class="tf-dom-header">
+            <span class="tf-dom-title" id="tfDomTitle">1M Dominance</span>
+            <span class="tf-dom-timer" id="tfDomTimer">Resets in --</span>
+        </div>
+        <div class="tf-dom-grid">
+            <div class="tf-dom-card tf-dom-buy">
+                <span class="tf-dom-card-label">📈 BUYS</span>
+                <span class="tf-dom-card-value" id="tfDomBuyVol">$0</span>
+                <span class="tf-dom-card-count" id="tfDomBuyCount">0 trades</span>
+            </div>
+            <div class="tf-dom-vs">
+                <div class="tf-dom-bar-wrap">
+                    <div class="tf-dom-bar-buy" id="tfDomBarBuy" style="width:50%"></div>
+                    <div class="tf-dom-bar-sell" id="tfDomBarSell" style="width:50%"></div>
+                </div>
+                <div class="tf-dom-pct-row">
+                    <span class="tf-dom-pct buy-text" id="tfDomBuyPct">50%</span>
+                    <span class="tf-dom-vs-text">VS</span>
+                    <span class="tf-dom-pct sell-text" id="tfDomSellPct">50%</span>
+                </div>
+                <div class="tf-dom-winner" id="tfDomWinner">—</div>
+            </div>
+            <div class="tf-dom-card tf-dom-sell">
+                <span class="tf-dom-card-label">📉 SELLS</span>
+                <span class="tf-dom-card-value" id="tfDomSellVol">$0</span>
+                <span class="tf-dom-card-count" id="tfDomSellCount">0 trades</span>
+            </div>
+        </div>
+    </div>
+
     <!-- Summary Cards Section -->
     <section class="summary-section" id="summarySection">
         <!-- Whale Buys Card -->

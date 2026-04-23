@@ -100,6 +100,17 @@ class WhaleFlowDashboard {
         this._logEntries = [];
         this._logSidebarOpen = false;
 
+        // ====== Timeframe Dominance ======
+        this._tfDomTimeframes = ['1m', '5m', '15m', '1h', '4h', 'D'];
+        this._tfDomDurations = { '1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, 'D': 86400000 };
+        this._tfDomLabels = { '1m': '1M', '5m': '5M', '15m': '15M', '1h': '1H', '4h': '4H', 'D': 'DAILY' };
+        this._tfDomActive = null; // currently selected timeframe key or null
+        this._tfDomStore = new Map(); // key: `${coin}_${tf}`, value: { buyVol, sellVol, buyCount, sellCount, resetTime }
+        this._tfDomTimerInterval = null;
+        this._loadTfDomState();
+        // Start auto-clear checker every second
+        this._tfDomCheckInterval = setInterval(() => this._tfDomCheckResets(), 1000);
+
         // Load server-accumulated state if available (Streamlit deployment)
         if (window.__SERVER_STATE__) {
             this.loadServerState(window.__SERVER_STATE__);
@@ -322,7 +333,13 @@ class WhaleFlowDashboard {
             'logClearBtn', 'logCloseBtn', 'logGroups',
             'logGroupERROR', 'logGroupWARNING', 'logGroupINFO', 'logGroupDEBUG',
             'logCountERROR', 'logCountWARNING', 'logCountINFO', 'logCountDEBUG',
-            'logBodyERROR', 'logBodyWARNING', 'logBodyINFO', 'logBodyDEBUG'
+            'logBodyERROR', 'logBodyWARNING', 'logBodyINFO', 'logBodyDEBUG',
+
+            // Timeframe Dominance
+            'tfDominanceBar', 'tfDominanceBtns', 'tfDomStatus', 'tfDomHint',
+            'tfDomDisplay', 'tfDomTitle', 'tfDomTimer',
+            'tfDomBuyVol', 'tfDomBuyCount', 'tfDomSellVol', 'tfDomSellCount',
+            'tfDomBarBuy', 'tfDomBarSell', 'tfDomBuyPct', 'tfDomSellPct', 'tfDomWinner'
         ];
         ids.forEach(id => {
             this.elements[id] = document.getElementById(id);
@@ -442,6 +459,36 @@ class WhaleFlowDashboard {
         if (this.elements.notifToggle) {
             this.elements.notifToggle.addEventListener('click', () => this.toggleDesktopNotifications());
         }
+
+        // Timeframe Dominance buttons
+        const tfDomBtns = document.getElementById('tfDominanceBtns');
+        if (tfDomBtns) {
+            tfDomBtns.addEventListener('click', (e) => {
+                const btn = e.target.closest('.tf-dom-btn');
+                if (!btn) return;
+                const tf = btn.dataset.tf;
+                if (this._tfDomActive === tf) {
+                    // Deselect
+                    this._tfDomActive = null;
+                    tfDomBtns.querySelectorAll('.tf-dom-btn').forEach(b => b.classList.remove('active'));
+                    if (this.elements.tfDomDisplay) this.elements.tfDomDisplay.style.display = 'none';
+                    const hint = document.getElementById('tfDomHint');
+                    if (hint) hint.textContent = 'Select a timeframe to see auto-clearing dominance';
+                } else {
+                    this._tfDomActive = tf;
+                    tfDomBtns.querySelectorAll('.tf-dom-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === tf));
+                    if (this.elements.tfDomDisplay) this.elements.tfDomDisplay.style.display = '';
+                    // Initialize store for current coin+tf if needed
+                    this._ensureTfDomStore(this.currentCoin, tf);
+                    const hint = document.getElementById('tfDomHint');
+                    if (hint) hint.textContent = `Tracking ${this._tfDomLabels[tf]} dominance — auto-resets every ${this._tfDomLabels[tf]}`;
+                }
+                this._saveTfDomPref();
+                this._updateTfDomUI();
+            });
+        }
+        // Restore active timeframe from persistence
+        this._applyInitialTfDom();
         this._updateNotifToggleUI();
     }
 
@@ -679,6 +726,7 @@ class WhaleFlowDashboard {
         this.renderReversalRadar();
         this.renderMegaWhales();
         this.renderRegime();
+        this._updateTfDomUI();
 
         this.showToast(`🔄 Switched to ${newCoin}`);
     }
@@ -879,6 +927,9 @@ class WhaleFlowDashboard {
                         d.currentSellCount++;
                     }
 
+                    // Timeframe Dominance accumulator
+                    this._tfDomAccumTrade(coin, value, isBuy);
+
                     // Build notification message
                     const sideEmoji = isBuy ? '🟢' : '🔴';
                     const valStr = value >= 1e6 ? `$${(value/1e6).toFixed(2)}M` : `$${(value/1e3).toFixed(0)}K`;
@@ -1038,6 +1089,9 @@ class WhaleFlowDashboard {
                     }
                 }
 
+                // ——— Timeframe Dominance accumulator ———
+                this._tfDomAccumTrade(coin, value, isBuy);
+
                 if (coin === this.currentCoin) {
                     currentCoinUpdated = true;
                 }
@@ -1129,6 +1183,8 @@ class WhaleFlowDashboard {
                     this._renderTradesPending = false;
                 });
             }
+            // Update timeframe dominance for current coin
+            this._updateTfDomUI();
         }
     }
 
@@ -3318,6 +3374,236 @@ class WhaleFlowDashboard {
                 }
             }
         });
+    }
+
+    // ==================== TIMEFRAME DOMINANCE ENGINE ====================
+
+    /**
+     * Get or create the store entry for a coin+timeframe pair.
+     * Each entry tracks: buyVol, sellVol, buyCount, sellCount, resetTime (next reset epoch ms)
+     */
+    _ensureTfDomStore(coin, tf) {
+        const key = `${coin}_${tf}`;
+        if (!this._tfDomStore.has(key)) {
+            const now = Date.now();
+            this._tfDomStore.set(key, {
+                buyVol: 0,
+                sellVol: 0,
+                buyCount: 0,
+                sellCount: 0,
+                resetTime: this._calcNextReset(tf, now)
+            });
+        }
+        return this._tfDomStore.get(key);
+    }
+
+    /**
+     * Calculate the next wall-clock-aligned reset time for a timeframe.
+     * 1m/5m/15m/1h/4h align to clock boundaries; D resets at midnight UTC.
+     */
+    _calcNextReset(tf, fromMs) {
+        fromMs = fromMs || Date.now();
+        const dur = this._tfDomDurations[tf];
+        if (tf === 'D') {
+            // Next midnight UTC
+            const d = new Date(fromMs);
+            d.setUTCHours(0, 0, 0, 0);
+            d.setUTCDate(d.getUTCDate() + 1);
+            return d.getTime();
+        }
+        // Align to wall clock: round up to next boundary
+        return Math.ceil(fromMs / dur) * dur;
+    }
+
+    /**
+     * Accumulate a whale trade into ALL active timeframe stores for the given coin.
+     * This runs on every whale trade regardless of which timeframe is displayed.
+     */
+    _tfDomAccumTrade(coin, value, isBuy) {
+        const now = Date.now();
+        this._tfDomTimeframes.forEach(tf => {
+            const store = this._ensureTfDomStore(coin, tf);
+            // If past reset time, clear first
+            if (now >= store.resetTime) {
+                store.buyVol = 0;
+                store.sellVol = 0;
+                store.buyCount = 0;
+                store.sellCount = 0;
+                store.resetTime = this._calcNextReset(tf, now);
+            }
+            if (isBuy) {
+                store.buyVol += value;
+                store.buyCount++;
+            } else {
+                store.sellVol += value;
+                store.sellCount++;
+            }
+        });
+        // Throttle persistence saves
+        if (!this._tfDomSaveTimeout) {
+            this._tfDomSaveTimeout = setTimeout(() => {
+                this._saveTfDomState();
+                this._tfDomSaveTimeout = null;
+            }, 2000);
+        }
+    }
+
+    /**
+     * Check every second if any timeframe has passed its reset time.
+     * Clear data and recalculate next reset. Also updates the countdown timer.
+     */
+    _tfDomCheckResets() {
+        const now = Date.now();
+        let anyReset = false;
+
+        this._tfDomStore.forEach((store, key) => {
+            if (now >= store.resetTime) {
+                store.buyVol = 0;
+                store.sellVol = 0;
+                store.buyCount = 0;
+                store.sellCount = 0;
+                const tf = key.split('_').pop();
+                store.resetTime = this._calcNextReset(tf, now);
+                anyReset = true;
+            }
+        });
+
+        if (anyReset) {
+            this._saveTfDomState();
+            // Flash the timer badge
+            const timerEl = this.elements.tfDomTimer;
+            if (timerEl) {
+                timerEl.classList.add('resetting');
+                setTimeout(() => timerEl.classList.remove('resetting'), 600);
+            }
+        }
+
+        // Update UI (timer countdown + values if reset happened)
+        if (this._tfDomActive) {
+            this._updateTfDomUI();
+        }
+    }
+
+    /**
+     * Render the timeframe dominance display for the currently selected timeframe + coin.
+     */
+    _updateTfDomUI() {
+        if (!this._tfDomActive) return;
+        const tf = this._tfDomActive;
+        const coin = this.currentCoin;
+        const store = this._ensureTfDomStore(coin, tf);
+
+        // Title
+        const titleEl = this.elements.tfDomTitle;
+        if (titleEl) titleEl.textContent = `${this._tfDomLabels[tf]} Dominance — ${coin}`;
+
+        // Countdown timer
+        const timerEl = this.elements.tfDomTimer;
+        if (timerEl) {
+            const remaining = Math.max(0, store.resetTime - Date.now());
+            timerEl.textContent = `Resets in ${this._formatCountdown(remaining)}`;
+        }
+
+        // Values
+        const buyVolEl = this.elements.tfDomBuyVol;
+        const sellVolEl = this.elements.tfDomSellVol;
+        const buyCountEl = this.elements.tfDomBuyCount;
+        const sellCountEl = this.elements.tfDomSellCount;
+        if (buyVolEl) buyVolEl.textContent = '$' + this.formatCompact(store.buyVol);
+        if (sellVolEl) sellVolEl.textContent = '$' + this.formatCompact(store.sellVol);
+        if (buyCountEl) buyCountEl.textContent = `${store.buyCount} trade${store.buyCount !== 1 ? 's' : ''}`;
+        if (sellCountEl) sellCountEl.textContent = `${store.sellCount} trade${store.sellCount !== 1 ? 's' : ''}`;
+
+        // Bar
+        const total = store.buyVol + store.sellVol;
+        const buyPct = total > 0 ? (store.buyVol / total) * 100 : 50;
+        const sellPct = 100 - buyPct;
+        const barBuy = this.elements.tfDomBarBuy;
+        const barSell = this.elements.tfDomBarSell;
+        if (barBuy) barBuy.style.width = buyPct + '%';
+        if (barSell) barSell.style.width = sellPct + '%';
+
+        const buyPctEl = this.elements.tfDomBuyPct;
+        const sellPctEl = this.elements.tfDomSellPct;
+        if (buyPctEl) buyPctEl.textContent = buyPct.toFixed(1) + '%';
+        if (sellPctEl) sellPctEl.textContent = sellPct.toFixed(1) + '%';
+
+        // Winner badge
+        const winnerEl = this.elements.tfDomWinner;
+        if (winnerEl) {
+            if (total === 0) {
+                winnerEl.className = 'tf-dom-winner';
+                winnerEl.textContent = '—';
+            } else if (store.buyVol > store.sellVol) {
+                winnerEl.className = 'tf-dom-winner bulls';
+                winnerEl.textContent = `⬆ BULLS ${buyPct.toFixed(1)}%`;
+            } else if (store.sellVol > store.buyVol) {
+                winnerEl.className = 'tf-dom-winner bears';
+                winnerEl.textContent = `⬇ BEARS ${sellPct.toFixed(1)}%`;
+            } else {
+                winnerEl.className = 'tf-dom-winner';
+                winnerEl.textContent = '= EVEN 50%';
+            }
+        }
+    }
+
+    _formatCountdown(ms) {
+        if (ms <= 0) return '0s';
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        if (h > 0) return `${h}h ${m}m ${s}s`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
+    }
+
+    /**
+     * Restore the active timeframe button + display from localStorage on startup.
+     */
+    _applyInitialTfDom() {
+        if (!this._tfDomActive) return;
+        const tf = this._tfDomActive;
+        const tfDomBtns = document.getElementById('tfDominanceBtns');
+        if (tfDomBtns) {
+            tfDomBtns.querySelectorAll('.tf-dom-btn').forEach(b => b.classList.toggle('active', b.dataset.tf === tf));
+        }
+        if (this.elements.tfDomDisplay) this.elements.tfDomDisplay.style.display = '';
+        const hint = document.getElementById('tfDomHint');
+        if (hint) hint.textContent = `Tracking ${this._tfDomLabels[tf]} dominance — auto-resets every ${this._tfDomLabels[tf]}`;
+        this._updateTfDomUI();
+    }
+
+    // ---- Persistence ----
+
+    _saveTfDomPref() {
+        try {
+            localStorage.setItem('whaleflow_tfdom_active', this._tfDomActive || '');
+        } catch (e) {}
+    }
+
+    _saveTfDomState() {
+        try {
+            const obj = {};
+            this._tfDomStore.forEach((v, k) => { obj[k] = v; });
+            localStorage.setItem('whaleflow_tfdom_store', JSON.stringify(obj));
+        } catch (e) {}
+    }
+
+    _loadTfDomState() {
+        try {
+            const pref = localStorage.getItem('whaleflow_tfdom_active');
+            if (pref && this._tfDomTimeframes.includes(pref)) {
+                this._tfDomActive = pref;
+            }
+            const raw = localStorage.getItem('whaleflow_tfdom_store');
+            if (raw) {
+                const obj = JSON.parse(raw);
+                Object.entries(obj).forEach(([k, v]) => {
+                    this._tfDomStore.set(k, v);
+                });
+            }
+        } catch (e) {}
     }
 }
 
