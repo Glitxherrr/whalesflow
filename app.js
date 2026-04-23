@@ -750,6 +750,7 @@ class WhaleFlowDashboard {
         this.renderMegaWhales();
         this.renderRegime();
         this._updateTfDomUI();
+        this._updateAllTabDominanceColors();
 
         this.showToast(`🔄 Switched to ${newCoin}`);
     }
@@ -1250,6 +1251,7 @@ class WhaleFlowDashboard {
             }
             // Update timeframe dominance for current coin
             this._updateTfDomUI();
+            this._updateAllTabDominanceColors();
         }
     }
 
@@ -3483,6 +3485,56 @@ class WhaleFlowDashboard {
         });
     }
 
+    // ==================== TAB DOMINANCE COLORS ====================
+
+    /**
+     * Evaluate buy/sell dominance for every Data View tab and every Timeframe tab,
+     * then apply dom-bulls / dom-bears CSS class so the user can see at a glance
+     * which side is winning without clicking each tab.
+     */
+    _updateAllTabDominanceColors() {
+        const d = this.getCoinData(this.currentCoin);
+
+        // Helper: apply class to a button
+        const applyDom = (btn, buyVol, sellVol) => {
+            btn.classList.remove('dom-bulls', 'dom-bears');
+            if (buyVol + sellVol === 0) return;
+            btn.classList.add(buyVol > sellVol ? 'dom-bulls' : 'dom-bears');
+        };
+
+        // ---- Data View Mode tabs ----
+        const tfContainer = document.getElementById('tfWhaleVolume');
+        if (tfContainer) {
+            tfContainer.querySelectorAll('.tf-bar-btn').forEach(btn => {
+                const tf = btn.dataset.tf;
+                switch (tf) {
+                    case 'Historical':
+                        applyDom(btn, d.totalBuyVolume, d.totalSellVolume);
+                        break;
+                    case 'Current':
+                        applyDom(btn, d.currentBuyVolume || 0, d.currentSellVolume || 0);
+                        break;
+                    case 'MegaWhales':
+                        applyDom(btn, d.megaBuyVolume || 0, d.megaSellVolume || 0);
+                        break;
+                    case 'Clusters':
+                        applyDom(btn, d.clusterBuyVolume || 0, d.clusterSellVolume || 0);
+                        break;
+                }
+            });
+        }
+
+        // ---- Timeframe Dominance tabs ----
+        const tfDomBtns = document.getElementById('tfDominanceBtns');
+        if (tfDomBtns) {
+            tfDomBtns.querySelectorAll('.tf-dom-btn').forEach(btn => {
+                const tf = btn.dataset.tf;
+                const store = this._ensureTfDomStore(this.currentCoin, tf);
+                applyDom(btn, store.buyVol, store.sellVol);
+            });
+        }
+    }
+
     // ==================== TIMEFRAME DOMINANCE ENGINE ====================
 
     /**
@@ -3589,6 +3641,8 @@ class WhaleFlowDashboard {
         if (this._tfDomActive) {
             this._updateTfDomUI();
         }
+        // Keep tab dominance colors fresh
+        this._updateAllTabDominanceColors();
     }
 
     /**

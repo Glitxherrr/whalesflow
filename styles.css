@@ -535,6 +535,30 @@ body {
     border: 1px solid rgba(102, 126, 234, 0.4);
 }
 
+/* Dominance tint indicators on inactive buttons */
+.tf-bar-btn.dom-bulls:not(.active) {
+    background: rgba(0, 230, 138, 0.08);
+    color: var(--buy-primary);
+    border-bottom: 2px solid rgba(0, 230, 138, 0.5);
+    box-shadow: 0 2px 8px rgba(0, 230, 138, 0.1);
+}
+
+.tf-bar-btn.dom-bears:not(.active) {
+    background: rgba(255, 71, 87, 0.08);
+    color: var(--sell-primary);
+    border-bottom: 2px solid rgba(255, 71, 87, 0.5);
+    box-shadow: 0 2px 8px rgba(255, 71, 87, 0.1);
+}
+
+/* Dominance indicator on ACTIVE buttons — bottom border glow */
+.tf-bar-btn.active.dom-bulls {
+    border-bottom: 2px solid var(--buy-primary);
+}
+
+.tf-bar-btn.active.dom-bears {
+    border-bottom: 2px solid var(--sell-primary);
+}
+
 .tf-bar-hint {
     font-size: 0.7rem;
     color: var(--text-tertiary);
