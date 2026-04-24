@@ -254,6 +254,14 @@ class WhaleFlowDashboard {
 
     _saveThreshold(coin, value) {
         try { localStorage.setItem(`whaleflow_thresh_${coin}`, String(value)); } catch(e) {}
+        // Sync to server so other devices get the update
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({
+                method: 'set_threshold',
+                coin: coin,
+                value: value
+            }));
+        }
     }
 
     _loadThreshold(coin) {
@@ -1017,6 +1025,24 @@ class WhaleFlowDashboard {
                 this.renderTradesList();
                 this.updateAnalytics();
                 this.showToast('Current data cleared by another device');
+                break;
+            }
+            case 'threshold_update': {
+                // Server broadcast: another device changed a whale threshold
+                const { coin: tCoin, value: tVal } = msg.data || {};
+                if (tCoin && tVal) {
+                    try { localStorage.setItem(`whaleflow_thresh_${tCoin}`, String(tVal)); } catch(e) {}
+                    // If we're viewing the coin that changed, update live
+                    if (tCoin === this.currentCoin) {
+                        this.whaleThreshold = tVal;
+                        if (this.elements.whaleThreshold) {
+                            this.elements.whaleThreshold.value = tVal;
+                        }
+                        this.reprocessTrades();
+                        this.renderOrderbook();
+                    }
+                    this.showToast(`🐋 ${tCoin} threshold → $${this.formatCompact(tVal)} (synced)`);
+                }
                 break;
             }
         }
@@ -2723,6 +2749,21 @@ class WhaleFlowDashboard {
         }
         if (state.current_mode_clear_time) {
             this.currentModeClearTime = state.current_mode_clear_time;
+        }
+
+        // Hydrate whale thresholds from server (authoritative)
+        if (state.whale_thresholds) {
+            for (const [coin, val] of Object.entries(state.whale_thresholds)) {
+                try { localStorage.setItem(`whaleflow_thresh_${coin}`, String(val)); } catch(e) {}
+            }
+            // Update current coin's threshold
+            const serverVal = state.whale_thresholds[this.currentCoin];
+            if (serverVal) {
+                this.whaleThreshold = serverVal;
+                if (this.elements.whaleThreshold) {
+                    this.elements.whaleThreshold.value = serverVal;
+                }
+            }
         }
 
         this.coinList.forEach(coin => {

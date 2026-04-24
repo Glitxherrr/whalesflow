@@ -353,6 +353,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         with collector._data_lock:
                             collector.whale_thresholds[coin] = float(val)
                         logger.info(f"Threshold for {coin} set to ${val}")
+                        # Broadcast to all clients so other devices sync
+                        broadcast_msg = json.dumps({
+                            'type': 'threshold_update',
+                            'data': {'coin': coin, 'value': float(val)}
+                        })
+                        loop = collector._uvicorn_loop or collector.local_loop
+                        if loop:
+                            asyncio.run_coroutine_threadsafe(
+                                collector._broadcast_local(broadcast_msg), loop
+                            )
             except Exception as e:
                 logger.error(f"WS Message Error: {e}")
     except WebSocketDisconnect:
