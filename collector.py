@@ -145,7 +145,8 @@ RUNTIME_DIR = BASE_DIR / 'runtime'
 # HuggingFace Spaces mounts a persistent volume at /data that survives container
 # restarts.  Use it when available so the snapshot is not lost on cold-start.
 _HF_PERSISTENT = Path('/data')
-SNAPSHOT_DIR = _HF_PERSISTENT if _HF_PERSISTENT.exists() else RUNTIME_DIR
+# Only use /data if it exists AND is writable (Android Userland has /data but it's read-only)
+SNAPSHOT_DIR = _HF_PERSISTENT if (_HF_PERSISTENT.exists() and os.access(_HF_PERSISTENT, os.W_OK)) else RUNTIME_DIR
 
 # ===== LOGGING SETUP =====
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -864,7 +865,11 @@ class HyperliquidCollector:
                                 coin = t['product_id'].split('-')[0]
                                 if coin not in self.coins:
                                     continue
-                                dtime = datetime.fromisoformat(t['time'].replace('Z', '+00:00'))
+                                # Normalize fractional seconds to 6 digits for Python < 3.11
+                                time_str = t['time'].replace('Z', '+00:00')
+                                import re as _re
+                                time_str = _re.sub(r'(\d{2})\.(\d+)(\+)', lambda m: f"{m.group(1)}.{m.group(2)[:6].ljust(6,'0')}{m.group(3)}", time_str)
+                                dtime = datetime.fromisoformat(time_str)
                                 self._process_trades([{
                                     'coin': coin, 'px': float(t['price']), 'sz': float(t['size']),
                                     'side': 'B' if t['side'] == 'BUY' else 'S',
@@ -2364,7 +2369,22 @@ class HyperliquidCollector:
         # there is a narrow window where uvicorn accepts the first WebSocket connection
         # before _instance is set, causing an immediate 1013 close.
         _server_ready.wait(timeout=30)
+        # Detect LAN IP for cross-device access
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            lan_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            lan_ip = "127.0.0.1"
         logger.info(f"🚀 Launching Cloud-Ready server on {host}:{port}")
+        print(f"\n{'='*50}")
+        print(f"  🐋 WhaleFlow Dashboard Ready!")
+        print(f"{'='*50}")
+        print(f"  Local:   http://localhost:{port}")
+        print(f"  Network: http://{lan_ip}:{port}")
+        print(f"{'='*50}\n")
         uvicorn.run(app, host=host, port=port, log_level="warning")
 
     async def _broadcast_local(self, msg_str):
