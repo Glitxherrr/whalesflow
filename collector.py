@@ -75,6 +75,14 @@ class CoinData(TypedDict):
     current_sell_count: int
     whale_buckets: Deque[WhaleBucket]
     mega_whales: Deque[Trade]
+    mega_buy_vol: float
+    mega_sell_vol: float
+    mega_buy_count: int
+    mega_sell_count: int
+    cluster_buy_vol: float
+    cluster_sell_vol: float
+    cluster_buy_count: int
+    cluster_sell_count: int
     abs_cum_buy: float
     abs_cum_sell: float
     abs_snapshots: Deque[Dict[str, Any]]
@@ -156,6 +164,10 @@ _mh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', da
 logger.addHandler(_mh)
 
 # ===== CONFIGURATION =====
+# Timeframe dominance durations (ms)
+_TF_DOM_DURATIONS = {'1m': 60000, '5m': 300000, '15m': 900000, '1h': 3600000, '4h': 14400000, 'D': 86400000}
+_TF_DOM_TIMEFRAMES = list(_TF_DOM_DURATIONS.keys())
+
 CONFIG = {
     'coins': ['BTC', 'ETH', 'SOL', 'PAXG', 'XRP'],
     'whale_thresholds': {'BTC': 50, 'ETH': 50, 'SOL': 50, 'PAXG': 50, 'XRP': 50},
@@ -268,29 +280,32 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     await websocket.accept()
-    collector.local_clients.add(websocket)
+    # Capture uvicorn's event loop so background threads can broadcast on it
+    if collector._uvicorn_loop is None:
+        collector._uvicorn_loop = asyncio.get_event_loop()
     logger.info("New dashboard client connected via FastAPI WS")
     try:
-        with collector._data_lock:
-            snapshot = collector._get_full_state_snapshot()
-            await websocket.send_text(json.dumps({
-                'channel': 'full_state',
-                'data': snapshot
-            }))
+        # Send full_state BEFORE adding to local_clients to prevent concurrent
+        # writes (trade broadcasts would write to the same socket mid-send)
+        snapshot = collector._get_full_state_snapshot()  # get_state acquires its own lock
+        msg = json.dumps({'channel': 'full_state', 'data': snapshot})
+        await websocket.send_text(msg)
+        # NOW safe to add — full_state is fully sent, no concurrent writes
+        collector.local_clients.add(websocket)
 
-            display_names = {
-                'HL': 'Hyperliquid Future', 'BIN': 'Binance Spot/Future',
-                'BYB': 'Bybit Spot/Future', 'OKX': 'OKX Spot/Future',
-                'KRK': 'Kraken Spot/Future', 'CB': 'Coinbase Spot/Future',
-                'DRB': 'Deribit Future', 'BFX': 'Bitfinex Spot',
-                'BGT': 'Bitget Spot/Future', 'MEXC': 'MEXC Spot',
-                'UPB': 'Upbit Spot', 'GATE': 'Gate.io Spot/Future',
-            }
-            status_log = [
-                f"{display_names.get(ex, ex)}: {'Connected' if collector.exchange_status[ex]['connected'] else 'Disconnected'}"
-                for ex in collector.exchanges
-            ]
-            logger.info(f"Dashboard Refresh — Exchange Status: {', '.join(status_log)}")
+        display_names = {
+            'HL': 'Hyperliquid Future', 'BIN': 'Binance Spot/Future',
+            'BYB': 'Bybit Spot/Future', 'OKX': 'OKX Spot/Future',
+            'KRK': 'Kraken Spot/Future', 'CB': 'Coinbase Spot/Future',
+            'DRB': 'Deribit Future', 'BFX': 'Bitfinex Spot',
+            'BGT': 'Bitget Spot/Future', 'MEXC': 'MEXC Spot',
+            'UPB': 'Upbit Spot', 'GATE': 'Gate.io Spot/Future',
+        }
+        status_log = [
+            f"{display_names.get(ex, ex)}: {'Connected' if collector.exchange_status[ex]['connected'] else 'Disconnected'}"
+            for ex in collector.exchanges
+        ]
+        logger.info(f"Dashboard Refresh — Exchange Status: {', '.join(status_log)}")
 
         while True:
             message = await websocket.receive_text()
@@ -299,16 +314,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 if data.get('method') == 'ping':
                     await websocket.send_text(json.dumps({'channel': 'pong'}))
                 elif data.get('method') == 'clear_current':
+                    now_ms = time.time() * 1000
                     with collector._data_lock:
                         for c in collector.coins:
                             collector.data[c]['current_buy_vol'] = 0.0
                             collector.data[c]['current_sell_vol'] = 0.0
                             collector.data[c]['current_buy_count'] = 0
                             collector.data[c]['current_sell_count'] = 0
-                            collector.data[c]['current_since'] = time.time() * 1000
+                            collector.data[c]['current_since'] = now_ms
+                        collector.current_mode_clear_time = now_ms
+                        collector.data_view_mode = 'Current'
                         logger.info("Current accumulation cleared by user")
-                    # Save OUTSIDE the lock — _save_snapshot -> get_state re-acquires it
-                    collector._save_snapshot()
+                    # Broadcast to ALL clients so every device syncs immediately
+                    broadcast_msg = json.dumps({
+                        'channel': 'clear_current',
+                        'data': {'clear_time': now_ms, 'mode': 'Current'}
+                    })
+                    await collector._broadcast_local(broadcast_msg)
+                    # Snapshot is saved by _run_persist background thread (every 10s)
+                elif data.get('method') == 'set_mode':
+                    mode = data.get('mode', 'Historical')
+                    clear_time = data.get('clear_time', 0)
+                    with collector._data_lock:
+                        if mode in ('Historical', 'Current', 'MegaWhales', 'Clusters'):
+                            collector.data_view_mode = mode
+                        collector.current_mode_clear_time = float(clear_time)
+                    logger.info(f"Data view mode set to {mode}")
+                elif data.get('method') == 'set_tfdom_active':
+                    tf = data.get('tf', '')
+                    with collector._data_lock:
+                        collector.tf_dom_active = tf if tf else None
+                    logger.info(f"Timeframe dominance active: {tf or 'None'}")
                 elif data.get('method') == 'set_threshold':
                     coin = data.get('coin')
                     val = data.get('value')
@@ -393,9 +429,24 @@ class HyperliquidCollector:
 
         self.local_clients = set()
         self.local_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._uvicorn_loop: Optional[asyncio.AbstractEventLoop] = None  # set on first WS connect
+
+        # Global UI state (server-authoritative, synced to all browsers)
+        self.data_view_mode: str = 'Historical'
+        self.current_mode_clear_time: float = 0.0  # ms epoch
+
+        # Timeframe dominance store: key = f"{coin}_{tf}", value = dict
+        self.tf_dom_store: Dict[str, Dict[str, Any]] = {}
+        self.tf_dom_active: Optional[str] = None  # currently selected TF key or None
 
         for coin in self.coins:
             self.data[coin] = self._new_coin_data()
+
+        # Initialise TF dominance store for all coin+tf combos
+        for coin in self.coins:
+            for tf in _TF_DOM_TIMEFRAMES:
+                key = f"{coin}_{tf}"
+                self.tf_dom_store[key] = self._new_tfdom_entry(tf)
 
         # Log throttling
         self._last_warn_time = {}
@@ -421,6 +472,16 @@ class HyperliquidCollector:
             'current_sell_count': 0,
             'whale_buckets': deque(maxlen=1440),
             'mega_whales': deque(maxlen=500),
+            # Mega whale initiative accumulators
+            'mega_buy_vol': 0.0,
+            'mega_sell_vol': 0.0,
+            'mega_buy_count': 0,
+            'mega_sell_count': 0,
+            # Cluster dominance accumulators
+            'cluster_buy_vol': 0.0,
+            'cluster_sell_vol': 0.0,
+            'cluster_buy_count': 0,
+            'cluster_sell_count': 0,
             'abs_cum_buy': 0.0,
             'abs_cum_sell': 0.0,
             'abs_snapshots': deque(maxlen=int(cast(Any, CONFIG['abs_snapshots_maxlen']))),
@@ -467,6 +528,69 @@ class HyperliquidCollector:
             },
         }
 
+    # ==================== TIMEFRAME DOMINANCE HELPERS ====================
+
+    @staticmethod
+    def _calc_next_reset(tf: str, from_ms: float = None) -> float:
+        """Calculate the next wall-clock-aligned reset time for a timeframe."""
+        from_ms = from_ms or (time.time() * 1000)
+        dur = _TF_DOM_DURATIONS[tf]
+        if tf == 'D':
+            from datetime import timezone
+            d = datetime.fromtimestamp(from_ms / 1000, tz=timezone.utc)
+            d = d.replace(hour=0, minute=0, second=0, microsecond=0)
+            from datetime import timedelta
+            d += timedelta(days=1)
+            return d.timestamp() * 1000
+        return (from_ms // dur + 1) * dur
+
+    def _new_tfdom_entry(self, tf: str) -> dict:
+        return {
+            'buyVol': 0.0, 'sellVol': 0.0,
+            'buyCount': 0, 'sellCount': 0,
+            'resetTime': self._calc_next_reset(tf),
+        }
+
+    def _tfdom_accum_trade(self, coin: str, value: float, is_buy: bool):
+        """Accumulate a whale trade into ALL timeframe dominance stores for the given coin."""
+        now_ms = time.time() * 1000
+        for tf in _TF_DOM_TIMEFRAMES:
+            key = f"{coin}_{tf}"
+            store = self.tf_dom_store.get(key)
+            if store is None:
+                store = self._new_tfdom_entry(tf)
+                self.tf_dom_store[key] = store
+            if now_ms >= store['resetTime']:
+                store['buyVol'] = 0.0
+                store['sellVol'] = 0.0
+                store['buyCount'] = 0
+                store['sellCount'] = 0
+                store['resetTime'] = self._calc_next_reset(tf, now_ms)
+            if is_buy:
+                store['buyVol'] += value
+                store['buyCount'] += 1
+            else:
+                store['sellVol'] += value
+                store['sellCount'] += 1
+
+    def _run_tfdom_resets(self):
+        """Daemon thread: check every second for expired timeframe windows and clear them."""
+        while self.running:
+            try:
+                now_ms = time.time() * 1000
+                with self._data_lock:
+                    for key, store in self.tf_dom_store.items():
+                        if now_ms >= store['resetTime']:
+                            tf = key.split('_')[-1]
+                            store['buyVol'] = 0.0
+                            store['sellVol'] = 0.0
+                            store['buyCount'] = 0
+                            store['sellCount'] = 0
+                            store['resetTime'] = self._calc_next_reset(tf, now_ms)
+            except Exception:
+                pass
+            time.sleep(1)
+
     # ==================== LIFECYCLE ====================
 
     def start(self):
@@ -501,6 +625,7 @@ class HyperliquidCollector:
         threading.Thread(target=self._run_pressure, daemon=True).start()
         threading.Thread(target=self._run_persist, daemon=True).start()
         threading.Thread(target=self._run_aggregator, daemon=True).start()
+        threading.Thread(target=self._run_tfdom_resets, daemon=True).start()
         
         # Streamlit mode disables the embedded FastAPI server and only uses state injection.
         if self.enable_local_server:
@@ -512,10 +637,11 @@ class HyperliquidCollector:
         
         # Wire live log broadcasting through the local WS
         def _broadcast_log(entry):
-            if self.local_loop and self.local_clients:
+            loop = self._uvicorn_loop or self.local_loop
+            if loop and self.local_clients:
                 msg = json.dumps({'channel': 'log', 'data': entry})
                 asyncio.run_coroutine_threadsafe(
-                    self._broadcast_local(msg), self.local_loop
+                    self._broadcast_local(msg), loop
                 )
         _mh.set_broadcaster(_broadcast_log)
 
@@ -587,6 +713,8 @@ class HyperliquidCollector:
 
                     for key in ['total_buy_vol', 'total_sell_vol', 'buy_count', 'sell_count',
                                 'current_buy_vol', 'current_sell_vol', 'current_buy_count', 'current_sell_count',
+                                'mega_buy_vol', 'mega_sell_vol', 'mega_buy_count', 'mega_sell_count',
+                                'cluster_buy_vol', 'cluster_sell_vol', 'cluster_buy_count', 'cluster_sell_count',
                                 'funding', 'mark_px', 'oracle_px', 'open_interest', 'day_volume', 'last_trade_price',
                                 'current_since']:
                         if key in sc:
@@ -637,6 +765,16 @@ class HyperliquidCollector:
                         d['regime'] = sc['regime']
 
                     d['last_pressure_snap'] = {'buys': d['total_buy_vol'], 'sells': d['total_sell_vol']}
+
+            # Restore server-level UI state
+            self.data_view_mode = state.get('data_view_mode', 'Historical')
+            self.current_mode_clear_time = state.get('current_mode_clear_time', 0.0)
+            self.tf_dom_active = state.get('tf_dom_active', None)
+
+            # Restore timeframe dominance store
+            if state.get('tf_dom_store'):
+                for key, entry in state['tf_dom_store'].items():
+                    self.tf_dom_store[key] = entry
 
             self.snapshot_loaded = True
             logger.info(f"Snapshot loaded from {path}")
@@ -1134,11 +1272,12 @@ class HyperliquidCollector:
             return
 
         # Broadcast validated trades to local WS clients
-        if self.local_loop and self.local_clients:
+        loop = self._uvicorn_loop or self.local_loop
+        if loop and self.local_clients:
             formatted = {'channel': 'trades', 'data': valid_trades}
             msg_str = json.dumps(formatted)
             asyncio.run_coroutine_threadsafe(
-                self._broadcast_local(msg_str), self.local_loop
+                self._broadcast_local(msg_str), loop
             )
 
         self.last_trade_update = time.time()
@@ -1211,6 +1350,13 @@ class HyperliquidCollector:
                             'price': price, 'size': size, 'value': value,
                             'coin': coin, 'mega_type': 'initiative', 'exchange': exchange
                         })
+                        # Mega whale initiative volume accumulators
+                        if is_buy:
+                            d['mega_buy_vol'] += value
+                            d['mega_buy_count'] += 1
+                        else:
+                            d['mega_sell_vol'] += value
+                            d['mega_sell_count'] += 1
 
                     whale_entry = {
                         'time': trade_time, 'side': 'BUY' if is_buy else 'SELL',
@@ -1229,6 +1375,9 @@ class HyperliquidCollector:
                         d['sell_count'] += 1
                         d['current_sell_vol'] += value
                         d['current_sell_count'] += 1
+
+                    # Accumulate into timeframe dominance stores
+                    self._tfdom_accum_trade(coin, value, is_buy)
 
                     self._check_clustering(coin)
                 elif value >= CONFIG['agg_min_value']:
@@ -1280,6 +1429,13 @@ class HyperliquidCollector:
                     'value': total_val, 'coin': coin,
                     'mega_type': 'clustering', 'cluster_count': count, 'exchange': 'MIX'
                 })
+                # Cluster dominance accumulators
+                if cluster_side == 'bullish':
+                    d['cluster_buy_vol'] += total_val
+                    d['cluster_buy_count'] += count
+                else:
+                    d['cluster_sell_vol'] += total_val
+                    d['cluster_sell_count'] += count
 
     # ==================== TRADE AGGREGATION ENGINE ====================
 
@@ -1412,11 +1568,12 @@ class HyperliquidCollector:
                 )
 
         # --- Phase 3: Broadcast outside locks ---
-        if whale_broadcasts and self.local_loop and self.local_clients:
+        loop = self._uvicorn_loop or self.local_loop
+        if whale_broadcasts and loop and self.local_clients:
             try:
                 msg = json.dumps({'channel': 'trades', 'data': whale_broadcasts}, default=str)
                 asyncio.run_coroutine_threadsafe(
-                    self._broadcast_local(msg), self.local_loop
+                    self._broadcast_local(msg), loop
                 )
             except Exception:
                 pass  # Non-critical — don't let broadcast failure crash aggregator
@@ -1492,7 +1649,8 @@ class HyperliquidCollector:
                 self._evaluate_regime(coin, d)
         self.last_funding_update = time.time()
 
-        if self.local_loop and self.local_clients:
+        loop = self._uvicorn_loop or self.local_loop
+        if loop and self.local_clients:
             funding_payload = {
                 'channel': 'funding',
                 'data': {
@@ -1509,7 +1667,7 @@ class HyperliquidCollector:
                 }
             }
             asyncio.run_coroutine_threadsafe(
-                self._broadcast_local(json.dumps(funding_payload)), self.local_loop
+                self._broadcast_local(json.dumps(funding_payload)), loop
             )
 
     # ==================== MARKET REGIME EVALUATOR ====================
@@ -1640,11 +1798,12 @@ class HyperliquidCollector:
                 self._evaluate_absorption()
                 self._save_snapshot()
                 # Push fresh full state to all connected dashboard clients
-                if self.local_loop and self.local_clients:
+                loop = self._uvicorn_loop or self.local_loop
+                if loop and self.local_clients:
                     snapshot = self._get_full_state_snapshot()
                     msg = json.dumps({'channel': 'full_state', 'data': snapshot})
                     asyncio.run_coroutine_threadsafe(
-                        self._broadcast_local(msg), self.local_loop
+                        self._broadcast_local(msg), loop
                     )
             except Exception as e:
                 logger.error(f"Snapshot error: {e}")
@@ -2126,12 +2285,17 @@ class HyperliquidCollector:
                 'connected': self.connected,
                 'started_at': self.started_at,
                 'uptime_seconds': time.time() - self.started_at if self.started_at else 0,
+                'server_time_ms': int(time.time() * 1000),  # authoritative clock for all clients
                 'last_funding_update': self.last_funding_update,
                 'last_trade_update': self.last_trade_update,
                 'snapshot_loaded': self.snapshot_loaded,
                 'exchange_status': self.exchange_status,
                 'whale_thresholds': self.whale_thresholds,
                 'log_buffer': [e for e in _mh.get_entries() if e.get('timestamp', 0) >= self.started_at],
+                'data_view_mode': self.data_view_mode,
+                'current_mode_clear_time': self.current_mode_clear_time,
+                'tf_dom_store': dict(self.tf_dom_store),
+                'tf_dom_active': self.tf_dom_active,
                 'coins': {}
             }
             for coin in self.coins:
@@ -2148,6 +2312,16 @@ class HyperliquidCollector:
                     'current_buy_count': d['current_buy_count'],
                     'current_sell_count': d['current_sell_count'],
                     'current_since': d.get('current_since', 0),
+                    # Mega whale initiative accumulators
+                    'mega_buy_vol': d.get('mega_buy_vol', 0.0),
+                    'mega_sell_vol': d.get('mega_sell_vol', 0.0),
+                    'mega_buy_count': d.get('mega_buy_count', 0),
+                    'mega_sell_count': d.get('mega_sell_count', 0),
+                    # Cluster dominance accumulators
+                    'cluster_buy_vol': d.get('cluster_buy_vol', 0.0),
+                    'cluster_sell_vol': d.get('cluster_sell_vol', 0.0),
+                    'cluster_buy_count': d.get('cluster_buy_count', 0),
+                    'cluster_sell_count': d.get('cluster_sell_count', 0),
                     'funding': d['funding'],
                     'funding_history': list(d['funding_history']),
                     'market_history': list(d['market_history']),
@@ -2197,15 +2371,20 @@ class HyperliquidCollector:
         if not self.local_clients:
             return
         
-        stale = []
-        for client in list(self.local_clients):
-            try:
-                await client.send_text(msg_str)
-            except Exception:
-                stale.append(client)
+        # Serialize all sends to prevent concurrent writes on the same WS
+        if not hasattr(self, '_ws_send_lock'):
+            self._ws_send_lock = asyncio.Lock()
         
-        for s in stale:
-            self.local_clients.discard(s)
+        async with self._ws_send_lock:
+            stale = []
+            for client in list(self.local_clients):
+                try:
+                    await client.send_text(msg_str)
+                except Exception:
+                    stale.append(client)
+            
+            for s in stale:
+                self.local_clients.discard(s)
 
 if __name__ == "__main__":
     collector = HyperliquidCollector.get_instance()

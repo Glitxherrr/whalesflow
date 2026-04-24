@@ -47,7 +47,10 @@ class WhaleFlowDashboard {
         // Data view mode: 'Historical' or 'Current'
         this.dataViewMode = 'Historical';
         this.currentModeClearTime = 0;
-        this._loadModeFromStorage();
+        // Server clock offset: serverNow() = Date.now() + _serverClockOffset
+        this._serverClockOffset = 0;
+        // Mode is now loaded from server state (no longer from localStorage)
+        // this._loadModeFromStorage() is deferred until loadServerState()
 
         // Desktop notifications
         this.desktopNotificationsEnabled = false;
@@ -114,6 +117,17 @@ class WhaleFlowDashboard {
         // Load server-accumulated state if available (Streamlit deployment)
         if (window.__SERVER_STATE__) {
             this.loadServerState(window.__SERVER_STATE__);
+        } else {
+            // FastAPI mode: fetch full state via HTTP immediately
+            fetch('/state')
+                .then(r => r.json())
+                .then(state => {
+                    if (state && state.coins) {
+                        console.log('📦 Fetched initial state via HTTP /state');
+                        this.loadServerState(state);
+                    }
+                })
+                .catch(err => console.warn('HTTP /state fetch failed, waiting for WS:', err));
         }
 
         // Absorption preview removed — real engine handles detection
@@ -231,59 +245,11 @@ class WhaleFlowDashboard {
     }
 
     _saveCurrentToStorage() {
-        try {
-            const dataToSave = {};
-            this.coinDataStore.forEach((d, coin) => {
-                dataToSave[coin] = {
-                    buyVol: d.currentBuyVolume || 0,
-                    sellVol: d.currentSellVolume || 0,
-                    buyCount: d.currentBuyCount || 0,
-                    sellCount: d.currentSellCount || 0,
-                    lastTime: d.lastTradeTime || this.currentModeClearTime,
-                    // Mega whale accumulators
-                    megaBuyVol: d.megaBuyVolume || 0,
-                    megaSellVol: d.megaSellVolume || 0,
-                    megaBuyCount: d.megaBuyCount || 0,
-                    megaSellCount: d.megaSellCount || 0,
-                    // Cluster accumulators
-                    clusterBuyVol: d.clusterBuyVolume || 0,
-                    clusterSellVol: d.clusterSellVolume || 0,
-                    clusterBuyCount: d.clusterBuyCount || 0,
-                    clusterSellCount: d.clusterSellCount || 0
-                };
-            });
-            localStorage.setItem('whaleflow_curr_state', JSON.stringify(dataToSave));
-        } catch(e) {}
+        // No-op: server is authoritative for current state
     }
 
     _loadCurrentFromStorage() {
-        try {
-            const raw = localStorage.getItem('whaleflow_curr_state');
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                this.coinList.forEach(coin => {
-                    const saved = parsed[coin];
-                    if (saved) {
-                        const d = this.getCoinData(coin);
-                        d.currentBuyVolume = saved.buyVol || 0;
-                        d.currentSellVolume = saved.sellVol || 0;
-                        d.currentBuyCount = saved.buyCount || 0;
-                        d.currentSellCount = saved.sellCount || 0;
-                        d.lastTradeTime = saved.lastTime || 0;
-                        // Restore mega whale accumulators
-                        d.megaBuyVolume = saved.megaBuyVol || 0;
-                        d.megaSellVolume = saved.megaSellVol || 0;
-                        d.megaBuyCount = saved.megaBuyCount || 0;
-                        d.megaSellCount = saved.megaSellCount || 0;
-                        // Restore cluster accumulators
-                        d.clusterBuyVolume = saved.clusterBuyVol || 0;
-                        d.clusterSellVolume = saved.clusterSellVol || 0;
-                        d.clusterBuyCount = saved.clusterBuyCount || 0;
-                        d.clusterSellCount = saved.clusterSellCount || 0;
-                    }
-                });
-            }
-        } catch(e) {}
+        // No-op: server is authoritative for current state
     }
 
     _saveThreshold(coin, value) {
@@ -426,7 +392,7 @@ class WhaleFlowDashboard {
                 btn.classList.add('active');
 
                 this.dataViewMode = btn.dataset.tf;
-                this._saveModeToStorage();
+                this._sendModeToServer();
 
                 // Show/hide clear button
                 const clearBtn = this.elements.clearDataBtn;
@@ -446,32 +412,28 @@ class WhaleFlowDashboard {
         // Clear Data button (in mode bar, Current mode only)
         if (this.elements.clearDataBtn) {
             this.elements.clearDataBtn.addEventListener('click', () => {
-                this.currentModeClearTime = Date.now();
-                this._saveModeToStorage();
-                
-                // Zero out accumulators for all coins natively in browser memory
-                this.coinDataStore.forEach(d => {
-                    d.currentBuyVolume = 0;
-                    d.currentSellVolume = 0;
-                    d.currentBuyCount = 0;
-                    d.currentSellCount = 0;
-                    d.lastTradeTime = this.currentModeClearTime;
-                });
-                this._saveCurrentToStorage();
-                
-                this.loadCoinData(this.currentCoin);
-
-                this.updateSummaryCards();
-                this.renderTradesList();
-                this.updateAnalytics();
-
-                // Update hint
-                const hint = document.getElementById('tfBarHint');
-                if (hint) {
-                    hint.textContent = `Showing data since ${new Date(this.currentModeClearTime).toLocaleTimeString()}`;
+                // Send clear_current to server — it will reset accumulators and broadcast to ALL clients
+                const ws = this.localWs || null;
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ method: 'clear_current' }));
+                    this.showToast('Clear command sent to server...');
+                } else {
+                    // Fallback: local-only clear
+                    this.currentModeClearTime = Date.now();
+                    this.coinDataStore.forEach(d => {
+                        d.currentBuyVolume = 0;
+                        d.currentSellVolume = 0;
+                        d.currentBuyCount = 0;
+                        d.currentSellCount = 0;
+                        d.lastTradeTime = this.currentModeClearTime;
+                    });
+                    this.loadCoinData(this.currentCoin);
+                    this.updateSummaryCards();
+                    this.renderTradesList();
+                    this.updateAnalytics();
+                    this._updateModeHint();
+                    this.showToast('Data cleared locally (server not connected)');
                 }
-
-                this.showToast('Data cleared - tracking from now');
             });
         }
 
@@ -548,7 +510,8 @@ class WhaleFlowDashboard {
 
         try {
             const host = window.location.hostname || '127.0.0.1';
-            this.localWs = new WebSocket(`ws://${host}:8765`);
+            const port = window.location.port || '8765';
+            this.localWs = new WebSocket(`ws://${host}:${port}/ws`);
             this.localWs.onopen = () => {
                 console.log('Local backend connected successfully');
                 this.localWsActive = true;
@@ -748,6 +711,7 @@ class WhaleFlowDashboard {
         this.renderAbsorptionUI();
         this.renderReversalRadar();
         this.renderMegaWhales();
+
         this.renderRegime();
         this._updateTfDomUI();
         this._updateAllTabDominanceColors();
@@ -1030,6 +994,31 @@ class WhaleFlowDashboard {
                 if (this._logEntries.length > 500) this._logEntries.shift();
                 this._renderLogSidebar();
                 break;
+            case 'full_state':
+                // Full state snapshot from local backend — re-hydrate everything
+                console.log('📦 Received full_state from server WS');
+                this.loadServerState(msg.data);
+                break;
+            case 'clear_current': {
+                // Server broadcast: another device cleared current data
+                const ct = (msg.data && msg.data.clear_time) || Date.now();
+                this.currentModeClearTime = ct;
+                this.dataViewMode = (msg.data && msg.data.mode) || 'Current';
+                this.coinDataStore.forEach(d => {
+                    d.currentBuyVolume = 0;
+                    d.currentSellVolume = 0;
+                    d.currentBuyCount = 0;
+                    d.currentSellCount = 0;
+                    d.lastTradeTime = ct;
+                });
+                this.loadCoinData(this.currentCoin);
+                this._applyInitialMode();
+                this.updateSummaryCards();
+                this.renderTradesList();
+                this.updateAnalytics();
+                this.showToast('Current data cleared by another device');
+                break;
+            }
         }
     }
 
@@ -2438,6 +2427,7 @@ class WhaleFlowDashboard {
     // ==================== DATA VIEW MODE ====================
 
     _loadModeFromStorage() {
+        // Legacy localStorage fallback — server state overrides this in loadServerState
         try {
             const stored = localStorage.getItem('whaleflow_dataViewMode');
             if (['Historical', 'Current', 'MegaWhales', 'Clusters'].includes(stored)) {
@@ -2451,10 +2441,23 @@ class WhaleFlowDashboard {
     }
 
     _saveModeToStorage() {
+        // Keep localStorage as fallback but primary is server
         try {
             localStorage.setItem('whaleflow_dataViewMode', this.dataViewMode);
             localStorage.setItem('whaleflow_clearTime', String(this.currentModeClearTime));
         } catch (e) { /* localStorage not available */ }
+        this._sendModeToServer();
+    }
+
+    _sendModeToServer() {
+        const ws = this.localWs || null;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                method: 'set_mode',
+                mode: this.dataViewMode,
+                clear_time: this.currentModeClearTime
+            }));
+        }
     }
 
     _applyInitialMode() {
@@ -2648,9 +2651,14 @@ class WhaleFlowDashboard {
 
     // ==================== CLOCK ====================
 
+    /** Returns the current time in ms, corrected by server clock offset */
+    serverNow() {
+        return Date.now() + this._serverClockOffset;
+    }
+
     startClock() {
         const update = () => {
-            this.elements.liveClock.textContent = new Date().toLocaleTimeString('en-US', {
+            this.elements.liveClock.textContent = new Date(this.serverNow()).toLocaleTimeString('en-US', {
                 hour12: true, hour: '2-digit', minute: '2-digit', second: '2-digit'
             });
         };
@@ -2701,9 +2709,21 @@ class WhaleFlowDashboard {
     loadServerState(state) {
         if (!state || !state.coins) return;
 
+        // Sync clocks: compute offset so all devices use the server's time
+        if (state.server_time_ms) {
+            this._serverClockOffset = state.server_time_ms - Date.now();
+            console.log(`🕐 Clock sync: offset = ${this._serverClockOffset}ms`);
+        }
+
         console.log(`📦 Loading server state (uptime: ${Math.round(state.uptime_seconds / 60)}min)`);
 
-        this._loadCurrentFromStorage();
+        // Hydrate data view mode from server (authoritative)
+        if (state.data_view_mode) {
+            this.dataViewMode = state.data_view_mode;
+        }
+        if (state.current_mode_clear_time) {
+            this.currentModeClearTime = state.current_mode_clear_time;
+        }
 
         this.coinList.forEach(coin => {
             const serverCoin = state.coins[coin];
@@ -2720,28 +2740,25 @@ class WhaleFlowDashboard {
                 d.buyCount = serverCoin.buy_count;
                 d.sellCount = serverCoin.sell_count;
 
-                // Re-hydrate the current accumulation seamlessly without double-counting
-                if (this.currentModeClearTime > 0) {
-                    // Using Math.max guarantees we safely stitch from wherever the browser memory last left off
-                    const stitchTime = Math.max(this.currentModeClearTime, d.lastTradeTime || 0);
-                    
-                    for (let i = d.whaleTrades.length - 1; i >= 0; i--) {
-                        const t = d.whaleTrades[i];
-                        if (t.time > stitchTime) {
-                            if (t.side === 'BUY') {
-                                d.currentBuyVolume += t.value;
-                                d.currentBuyCount++;
-                            } else {
-                                d.currentSellVolume += t.value;
-                                d.currentSellCount++;
-                            }
-                        }
-                    }
-                    if (d.whaleTrades.length > 0) {
-                        d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
-                    }
+                // Server is authoritative for current accumulators
+                d.currentBuyVolume = serverCoin.current_buy_vol || 0;
+                d.currentSellVolume = serverCoin.current_sell_vol || 0;
+                d.currentBuyCount = serverCoin.current_buy_count || 0;
+                d.currentSellCount = serverCoin.current_sell_count || 0;
+
+                // Server is authoritative for mega/cluster accumulators
+                d.megaBuyVolume = serverCoin.mega_buy_vol || 0;
+                d.megaSellVolume = serverCoin.mega_sell_vol || 0;
+                d.megaBuyCount = serverCoin.mega_buy_count || 0;
+                d.megaSellCount = serverCoin.mega_sell_count || 0;
+                d.clusterBuyVolume = serverCoin.cluster_buy_vol || 0;
+                d.clusterSellVolume = serverCoin.cluster_sell_vol || 0;
+                d.clusterBuyCount = serverCoin.cluster_buy_count || 0;
+                d.clusterSellCount = serverCoin.cluster_sell_count || 0;
+
+                if (d.whaleTrades.length > 0) {
+                    d.lastTradeTime = Math.max(d.lastTradeTime || 0, d.whaleTrades[0].time);
                 }
-                this._saveCurrentToStorage();
 
                 d.lastPressureSnapshot = {
                     buys: serverCoin.total_buy_vol,
@@ -2893,6 +2910,20 @@ class WhaleFlowDashboard {
         this.renderAbsorptionUI();
         this.renderReversalRadar();
         this.renderMegaWhales();
+
+        // Apply server-authoritative data view mode to UI controls
+        this._applyInitialMode();
+
+        // Hydrate TF dominance from server
+        if (state.tf_dom_store) {
+            Object.entries(state.tf_dom_store).forEach(([key, entry]) => {
+                this._tfDomStore.set(key, entry);
+            });
+        }
+        if (state.tf_dom_active) {
+            this._tfDomActive = state.tf_dom_active;
+        }
+        this._updateTfDomUI();
 
         // Store system-level state for the System Panel
         this._serverSystemState = {
@@ -3544,7 +3575,7 @@ class WhaleFlowDashboard {
     _ensureTfDomStore(coin, tf) {
         const key = `${coin}_${tf}`;
         if (!this._tfDomStore.has(key)) {
-            const now = Date.now();
+            const now = this.serverNow();
             this._tfDomStore.set(key, {
                 buyVol: 0,
                 sellVol: 0,
@@ -3561,7 +3592,7 @@ class WhaleFlowDashboard {
      * 1m/5m/15m/1h/4h align to clock boundaries; D resets at midnight UTC.
      */
     _calcNextReset(tf, fromMs) {
-        fromMs = fromMs || Date.now();
+        fromMs = fromMs || this.serverNow();
         const dur = this._tfDomDurations[tf];
         if (tf === 'D') {
             // Next midnight UTC
@@ -3579,7 +3610,7 @@ class WhaleFlowDashboard {
      * This runs on every whale trade regardless of which timeframe is displayed.
      */
     _tfDomAccumTrade(coin, value, isBuy) {
-        const now = Date.now();
+        const now = this.serverNow();
         this._tfDomTimeframes.forEach(tf => {
             const store = this._ensureTfDomStore(coin, tf);
             // If past reset time, clear first
@@ -3612,7 +3643,7 @@ class WhaleFlowDashboard {
      * Clear data and recalculate next reset. Also updates the countdown timer.
      */
     _tfDomCheckResets() {
-        const now = Date.now();
+        const now = this.serverNow();
         let anyReset = false;
 
         this._tfDomStore.forEach((store, key) => {
@@ -3661,7 +3692,7 @@ class WhaleFlowDashboard {
         // Countdown timer
         const timerEl = this.elements.tfDomTimer;
         if (timerEl) {
-            const remaining = Math.max(0, store.resetTime - Date.now());
+            const remaining = Math.max(0, store.resetTime - this.serverNow());
             timerEl.textContent = `Resets in ${this._formatCountdown(remaining)}`;
         }
 
